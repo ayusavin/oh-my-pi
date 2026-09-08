@@ -15,6 +15,7 @@ import {
 	readArgsHaveTarget,
 } from "../../modes/components/read-tool-group";
 import { TodoReminderComponent } from "../../modes/components/todo-reminder";
+import { ToolCallGroupComponent } from "../../modes/components/tool-call-group";
 import {
 	ToolExecutionComponent,
 	type ToolExecutionHandle,
@@ -37,6 +38,7 @@ import { type ApprovalMode, resolveApproval } from "../../tools/approval";
 import { previewLine, TRUNCATE_LENGTHS } from "../../tools/render-utils";
 import { PROPOSE_DEVICE_NAME, writeDeviceDispatch } from "../../tools/resolve";
 import { nextActionableTask } from "../../tools/todo";
+import { resolveToolCallDisplay } from "../../tools/tool-call-display";
 import { SpeechEnhancer } from "../../tts/speech-enhancer";
 import { vocalizer } from "../../tts/vocalizer";
 import { canonicalizeMessage } from "../../utils/thinking-display";
@@ -92,6 +94,7 @@ interface ApprovalPreviewGate {
 
 export class EventController {
 	#lastReadGroup: ReadToolGroupComponent | undefined = undefined;
+	#lastToolGroup: ToolCallGroupComponent | undefined = undefined;
 	/** Timestamp of the current turn's user prompt; drives the usage row's prompt→yield delta. */
 	#turnStartedAt: number | undefined = undefined;
 	/** When the last completed run ended; stale `#turnStartedAt` anchors are cleared against it. */
@@ -347,9 +350,38 @@ export class EventController {
 		this.#liveIrcCards.clear();
 	}
 
-	#resetReadGroup(): void {
+	/**
+	 * Break the open read group, and — unless the caller is about to open a
+	 * non-read tool card in the same run — the open tool-call group too. A read
+	 * group only ever holds reads, so any other tool ends it; a tool-call group
+	 * spans mixed tools and ends only at a real turn boundary (visible assistant
+	 * content, a new user/custom message, the usage row, turn end).
+	 */
+	#resetReadGroup(options: { keepToolGroup?: boolean } = {}): void {
 		this.#lastReadGroup?.finalize();
 		this.#lastReadGroup = undefined;
+		if (options.keepToolGroup) return;
+		this.#lastToolGroup?.seal();
+		this.#lastToolGroup = undefined;
+	}
+
+	/**
+	 * Add a tool card to the transcript, folding it into the turn's group when
+	 * `display.toolCalls` is `grouped`. This is the seam that knows a turn's
+	 * calls *while they are still arriving*: `turn_end` knows them too, but by
+	 * then the earlier cards are already emitted and possibly committed to
+	 * scrollback, which TranscriptContainer cannot retract.
+	 */
+	#addToolBlock(component: ToolExecutionComponent): void {
+		if (resolveToolCallDisplay() !== "grouped") {
+			this.ctx.chatContainer.addChild(component);
+			return;
+		}
+		if (!this.#lastToolGroup) {
+			this.#lastToolGroup = new ToolCallGroupComponent();
+			this.ctx.chatContainer.addChild(this.#lastToolGroup);
+		}
+		this.#lastToolGroup.addCall(component);
 	}
 	/** Freeze foreground tool cards once no live agent turn can complete them. */
 	#sealAbandonedForegroundTools(): void {
@@ -453,9 +485,17 @@ export class EventController {
 		let removeComponent = true;
 		if (component instanceof ReadToolGroupComponent) {
 			removeComponent = component.removeEntry(toolCallId);
-			if (component === this.#lastReadGroup) this.#resetReadGroup();
+			if (component === this.#lastReadGroup) this.#resetReadGroup({ keepToolGroup: true });
 		}
-		if (removeComponent) this.ctx.chatContainer.removeChild(component);
+		if (removeComponent) {
+			// A grouped card's parent is its group, not the chat container.
+			this.#lastToolGroup?.removeChild(component);
+			if (this.#lastToolGroup?.callCount === 0) {
+				this.ctx.chatContainer.removeChild(this.#lastToolGroup);
+				this.#lastToolGroup = undefined;
+			}
+			this.ctx.chatContainer.removeChild(component);
+		}
 		this.ctx.pendingTools.delete(toolCallId);
 		this.#toolTimelineComponents.delete(toolCallId);
 		this.#clearReadToolCall(toolCallId);
@@ -1291,7 +1331,7 @@ export class EventController {
 				// that already finished, permanently pending.
 				if (!this.ctx.pendingTools.has(content.id) && !this.#toolTimelineComponents.has(content.id)) {
 					this.#resolveDisplaceablePoll(renderToolName);
-					this.#resetReadGroup();
+					this.#resetReadGroup({ keepToolGroup: true });
 					const component = new ToolExecutionComponent(
 						renderToolName,
 						renderArgs,
@@ -1310,7 +1350,7 @@ export class EventController {
 						this.#pendingStreamPreviews.delete(content.id);
 					}
 					component.setExpanded(this.ctx.toolOutputExpanded);
-					this.ctx.chatContainer.addChild(component);
+					this.#addToolBlock(component);
 					this.ctx.pendingTools.set(content.id, component);
 					this.#toolTimelineComponents.set(content.id, component);
 					this.#toolArgsReveal.bind(content.id, component);
@@ -1564,7 +1604,7 @@ export class EventController {
 				return;
 			}
 
-			this.#resetReadGroup();
+			this.#resetReadGroup({ keepToolGroup: true });
 			const component = new ToolExecutionComponent(
 				renderToolName,
 				event.args,
@@ -1586,7 +1626,7 @@ export class EventController {
 			component.setExecutionStarted(event.toolCallId);
 			this.#executionStartedCallIds.add(event.toolCallId);
 			component.setExpanded(this.ctx.toolOutputExpanded);
-			this.ctx.chatContainer.addChild(component);
+			this.#addToolBlock(component);
 			this.ctx.pendingTools.set(event.toolCallId, component);
 			this.#toolTimelineComponents.set(event.toolCallId, component);
 			this.#settleHeldCompletionIfPresent(event.toolCallId, component);

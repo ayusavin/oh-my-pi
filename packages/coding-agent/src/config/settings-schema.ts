@@ -1359,6 +1359,24 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"display.toolCalls": {
+		type: "enum",
+		values: ["full", "compact", "grouped"] as const,
+		default: "full",
+		ui: {
+			tab: "appearance",
+			group: "Display",
+			label: "Tool Call Display",
+			description:
+				"How tool calls render in the transcript: full keeps the standard card, compact collapses each call to one line (intent, outcome, size, duration), grouped additionally folds consecutive calls in a turn into one summary row. ctrl+o expands compact/grouped to the per-call lines, then to the full card.",
+			options: [
+				{ value: "full", label: "Full", description: "Default; the standard tool card" },
+				{ value: "compact", label: "Compact", description: "One line per call" },
+				{ value: "grouped", label: "Grouped", description: "One row per run of calls in a turn" },
+			],
+		},
+	},
+
 	"display.showTokenUsage": {
 		type: "boolean",
 		default: false,

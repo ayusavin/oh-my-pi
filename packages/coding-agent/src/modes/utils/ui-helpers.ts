@@ -32,6 +32,7 @@ import {
 import { SkillMessageComponent } from "../../modes/components/skill-message";
 import { StrippedToolCallsPlaceholder } from "../../modes/components/stripped-tool-calls-placeholder";
 import { ToolActivityContainer } from "../../modes/components/tool-activity";
+import { ToolCallGroupComponent } from "../../modes/components/tool-call-group";
 import {
 	ToolExecutionComponent,
 	type ToolExecutionHandle,
@@ -56,6 +57,7 @@ import {
 } from "../../session/messages";
 import type { SessionContext, StrippedToolCallsMarker } from "../../session/session-context";
 import { replaceTabs } from "../../tools/render-utils";
+import { resolveToolCallDisplay } from "../../tools/tool-call-display";
 import { buildSkillCommandPrompt, invokeSkillCommandFromText, isKnownSkillCommand } from "../skill-command";
 import {
 	createAssistantMessageComponent,
@@ -386,6 +388,24 @@ export class UiHelpers {
 		}
 
 		let readGroup: ReadToolGroupComponent | null = null;
+		// Mirrors the live path's grouping (`display.toolCalls: grouped`): a run of
+		// tool calls with no visible assistant content between them is one row.
+		let toolGroup: ToolCallGroupComponent | null = null;
+		const addToolBlock = (component: ToolExecutionComponent) => {
+			if (resolveToolCallDisplay() !== "grouped") {
+				this.ctx.chatContainer.addChild(component);
+				return;
+			}
+			if (!toolGroup) {
+				toolGroup = new ToolCallGroupComponent();
+				this.ctx.chatContainer.addChild(toolGroup);
+			}
+			toolGroup.addCall(component);
+		};
+		const breakToolGroup = () => {
+			toolGroup?.seal();
+			toolGroup = null;
+		};
 		const readToolCallArgs = new Map<string, Record<string, unknown>>();
 		const readToolCallAssistantComponents = new Map<string, AssistantMessageComponent>();
 		// Defer per-turn metrics until the turn's tool results have materialized.
@@ -414,6 +434,7 @@ export class UiHelpers {
 			if (!usageAttached) {
 				readGroup?.seal();
 				readGroup = null;
+				breakToolGroup();
 				this.ctx.chatContainer.addChild(
 					createUsageRowBlock(
 						pendingUsage,
@@ -512,6 +533,7 @@ export class UiHelpers {
 					// a pending entry otherwise keeps the group active indefinitely.
 					readGroup?.seal();
 					readGroup = null;
+					breakToolGroup();
 				}
 				const errorPresentation = resolveAssistantErrorPresentation(message, this.ctx.viewSession.retryAttempt);
 				const hasErrorStop = errorPresentation.kind === "full";
@@ -608,7 +630,7 @@ export class UiHelpers {
 						content.id,
 					);
 					component.setExpanded(this.ctx.toolOutputExpanded);
-					this.ctx.chatContainer.addChild(component);
+					addToolBlock(component);
 
 					if (hasErrorStop && errorMessage) {
 						component.updateResult(
@@ -728,6 +750,7 @@ export class UiHelpers {
 			} else {
 				readGroup?.seal();
 				readGroup = null;
+				breakToolGroup();
 				// A user prompt closes the displacement window, same as the live path.
 				if (message.role === "user") resolveWaitingPoll();
 				if (message.role === "user") resolveTodoSnapshot();
@@ -757,6 +780,7 @@ export class UiHelpers {
 		// The trailing read run has no following break to close it; seal so the
 		// rebuilt group can retire as history even with a never-persisted result.
 		readGroup?.seal();
+		breakToolGroup();
 		// A trailing waiting poll is final history on rebuild; seal it and stop
 		// its spinner timer.
 		resolveWaitingPoll();

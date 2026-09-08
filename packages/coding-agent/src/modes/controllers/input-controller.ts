@@ -11,6 +11,7 @@ import { extractImagePathFromText } from "../../modes/components/custom-editor";
 import { ReadToolGroupComponent } from "../../modes/components/read-tool-group";
 import { renderSegmentTrack } from "../../modes/components/segment-track";
 import { TinyTitleDownloadProgressComponent } from "../../modes/components/tiny-title-download-progress";
+import { ToolCallGroupComponent } from "../../modes/components/tool-call-group";
 import { ToolExecutionComponent } from "../../modes/components/tool-execution";
 import { TreeSelectorComponent } from "../../modes/components/tree-selector";
 import { chipLabel, compactImageMarkers, shiftImageMarkers } from "../../modes/composer-attachments";
@@ -29,6 +30,7 @@ import { tinyTitleClient } from "../../tiny/title-client";
 import type { TinyTitleProgressEvent } from "../../tiny/title-protocol";
 import { resolveReadPath } from "../../tools/path-utils";
 import { shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../../tools/render-utils";
+import { resolveToolCallDisplay, setToolCallExpandLevel, toolCallExpandLevel } from "../../tools/tool-call-display";
 import { vocalizer } from "../../tts/vocalizer";
 import {
 	copyToClipboard,
@@ -2148,8 +2150,24 @@ export class InputController {
 			this.ctx.showStatus(`Tool activity is hidden — show it with ${visibilityHint} before expanding`);
 			return;
 		}
-		this.setToolsExpanded(!this.ctx.toolOutputExpanded);
-		this.ctx.showStatus(`Tool output expansion: ${this.ctx.toolOutputExpanded ? "enabled" : "disabled"}`);
+		if (resolveToolCallDisplay() === "full") {
+			this.setToolsExpanded(!this.ctx.toolOutputExpanded);
+			this.ctx.showStatus(`Tool output expansion: ${this.ctx.toolOutputExpanded ? "enabled" : "disabled"}`);
+			return;
+		}
+		// Collapsed rendering adds one step: collapsed → the per-call lines → the
+		// full card. Only the last sets `toolOutputExpanded`, so what an expanded
+		// card shows is exactly what it shows today.
+		const level = (toolCallExpandLevel() + 1) % 3;
+		setToolCallExpandLevel(level);
+		this.setToolsExpanded(level === 2);
+		this.ctx.showStatus(
+			level === 0
+				? "Tool calls: collapsed"
+				: level === 1
+					? "Tool calls: one line per call"
+					: "Tool calls: full output",
+		);
 	}
 
 	toggleToolActivityVisibility(): void {
@@ -2158,12 +2176,15 @@ export class InputController {
 
 		if (!this.ctx.hideToolActivity) {
 			this.ctx.toolOutputExpanded = false;
+			setToolCallExpandLevel(0);
 		}
 
 		for (const child of this.ctx.chatContainer.children) {
 			if (
 				!this.ctx.hideToolActivity &&
-				(child instanceof ToolExecutionComponent || child instanceof ReadToolGroupComponent)
+				(child instanceof ToolExecutionComponent ||
+					child instanceof ReadToolGroupComponent ||
+					child instanceof ToolCallGroupComponent)
 			) {
 				child.setExpanded(false);
 			} else if (child instanceof AssistantMessageComponent) {

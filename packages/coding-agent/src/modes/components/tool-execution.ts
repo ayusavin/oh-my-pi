@@ -14,6 +14,7 @@ import {
 	truncateToWidth,
 } from "@oh-my-pi/pi-tui";
 import { getProjectDir, isRecord, logger, sanitizeText } from "@oh-my-pi/pi-utils";
+import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
 import { type PerFileDiffPreview, renderStreamingFallback } from "../../edit/renderer";
 import type { Theme } from "../../modes/theme/theme";
 import { getThemeEpoch, theme } from "../../modes/theme/theme";
@@ -21,7 +22,14 @@ import { BASH_DEFAULT_PREVIEW_LINES } from "../../tools/bash";
 import { formatDefaultToolExecution } from "../../tools/default-renderer";
 import { EVAL_DEFAULT_PREVIEW_LINES } from "../../tools/eval";
 import { isWaitingPollDetails } from "../../tools/hub";
+import { formatArgsInline } from "../../tools/json-tree";
 import { formatStatusIcon, replaceTabs, resolveImageOptions } from "../../tools/render-utils";
+import {
+	buildCollapsedToolCallLine,
+	type CollapsedToolCall,
+	resolveToolCallDisplay,
+	toolCallExpandLevel,
+} from "../../tools/tool-call-display";
 import {
 	type FirstResultViewportRepaint,
 	type ToolActivitySummary,
@@ -42,6 +50,9 @@ export function toolRenderName(wireName: string, tool: AgentTool | undefined): s
 	return tool?.name ?? wireName;
 }
 type DisplaceableToolName = "hub" | "todo";
+
+/** Budget for the args preview that stands in for a missing intent on a collapsed line. */
+const COLLAPSED_ARGS_PREVIEW_WIDTH = 60;
 
 function isTodoToolDetails(details: unknown): details is TodoToolDetails {
 	return (
@@ -333,6 +344,9 @@ export class ToolExecutionComponent extends Container {
 	// Execution start on the presentation clock (performance.now domain, the
 	// same domain as AnimationFrame.now supplied by the transcript allocator).
 	#executionStartedAtNow: number | undefined;
+	// Settle time on the same presentation clock, so a collapsed line can state a
+	// fixed duration instead of an elapsed one once the result lands.
+	#settledAtNow: number | undefined;
 	// Wall clock captured whenever a task card is rebuilt.
 	#taskRenderNowMs = Date.now();
 	// Set on each `render()` when the last painted pending shape must be
@@ -522,6 +536,7 @@ export class ToolExecutionComponent extends Container {
 		// When tool is complete, ensure args are marked complete so spinner stops
 		if (!isPartial) {
 			this.#argsComplete = true;
+			this.#settledAtNow = performance.now();
 			this.#previewReady?.resolve();
 		}
 		this.#updateSpinnerAnimation();
@@ -846,6 +861,14 @@ export class ToolExecutionComponent extends Container {
 
 	override render(width: number): readonly string[] {
 		if (!this.#toolActivityVisible || this.#allocation === 0) return [];
+		// The single choke point for `display.toolCalls`: every tool reaches the
+		// transcript through this component, so replacing the block here collapses
+		// bespoke-framed tools (bash, read, grep, edit, eval) and the generic card
+		// alike, without touching a single tool renderer. Expand level 2 falls
+		// through to today's rendering unchanged.
+		if (resolveToolCallDisplay() !== "full" && toolCallExpandLevel() < 2) {
+			return [buildCollapsedToolCallLine(this.collapsedCall(), theme, width)];
+		}
 		let lines = super.render(width);
 		if (this.#allocation < 3) {
 			// A squeezed allocation degrades only blocks that genuinely overflow it.
@@ -884,6 +907,70 @@ export class ToolExecutionComponent extends Container {
 			return [truncateToWidth(`${styledGlyph} ${text}`, width)];
 		}
 		return [truncateToWidth(`${theme.fg("dim", "╭─")} ${text}`, width), theme.fg("dim", "╰")];
+	}
+
+	/**
+	 * What this call says in one line. The wording is the per-call intent the
+	 * agent already computes (`i` arg, else `tool.intent(args)`); tools with
+	 * neither fall back to their label plus the same inline args preview the
+	 * generic card shows.
+	 */
+	collapsedCall(): CollapsedToolCall {
+		const output = this.#result ? this.#getTextOutput().trimEnd() : "";
+		const isError = this.#result?.isError === true;
+		const outcome = this.#isBenignSkip()
+			? "skipped"
+			: this.#isRunning()
+				? this.#executionStarted
+					? "running"
+					: "pending"
+				: isError
+					? "error"
+					: "ok";
+		const exitCode = (this.#result?.details as { exitCode?: unknown } | undefined)?.exitCode;
+		const settledMs =
+			this.#executionStartedAtNow !== undefined && this.#settledAtNow !== undefined
+				? this.#settledAtNow - this.#executionStartedAtNow
+				: undefined;
+		const elapsedMs =
+			outcome === "running" && this.#executionStartedAtNow !== undefined
+				? Math.max(0, this.#presentationFrame.now - this.#executionStartedAtNow)
+				: undefined;
+		return {
+			label: this.#toolLabel,
+			toolName: this.#toolName,
+			intent: this.#callIntent(),
+			argsPreview: this.#collapsedArgsPreview(),
+			outcome,
+			...(isError && output ? { errorFirstLine: output.split("\n").find(line => line.trim()) } : {}),
+			...(isError && typeof exitCode === "number" ? { exitCode } : {}),
+			...(output ? { lines: output.split("\n").length } : {}),
+			...(settledMs !== undefined
+				? { durationMs: settledMs }
+				: elapsedMs !== undefined
+					? { durationMs: elapsedMs }
+					: {}),
+			...(this.#spinnerFrame !== undefined ? { spinnerFrame: this.#spinnerFrame } : {}),
+		};
+	}
+
+	#callIntent(): string | undefined {
+		const args = isRecord(this.#args) ? this.#args : undefined;
+		const supplied = args?.[INTENT_FIELD];
+		if (typeof supplied === "string" && supplied.trim()) return supplied.trim().replace(/\s*\.+$/, "");
+		if (typeof this.#tool?.intent !== "function") return undefined;
+		try {
+			return this.#tool.intent(this.#args as never)?.trim() || undefined;
+		} catch {
+			// An intent function must never break the UI (mirrors event-controller).
+			return undefined;
+		}
+	}
+
+	#collapsedArgsPreview(): string | undefined {
+		const args = isRecord(this.#args) ? this.#args : undefined;
+		if (!args || Object.keys(args).length === 0) return undefined;
+		return formatArgsInline(args, COLLAPSED_ARGS_PREVIEW_WIDTH) || undefined;
 	}
 
 	#activitySummary(): ToolActivitySummary {
