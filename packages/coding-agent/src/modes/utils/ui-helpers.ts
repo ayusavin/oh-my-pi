@@ -629,6 +629,7 @@ export class UiHelpers {
 						this.ctx.viewSession.sessionManager.getCwd(),
 						content.id,
 					);
+					component.setIntent(content.intent);
 					component.setExpanded(this.ctx.toolOutputExpanded);
 					addToolBlock(component);
 

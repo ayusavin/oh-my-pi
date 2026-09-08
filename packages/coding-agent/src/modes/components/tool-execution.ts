@@ -181,6 +181,8 @@ export interface ToolExecutionOptions {
 export interface ToolExecutionHandle extends Component {
 	updateArgs(args: any, toolCallId?: string): void;
 	updateStreamPreview?(update: unknown): void;
+	/** See `ToolExecutionComponent#setIntent` — optional because the shared read-group handle doesn't implement it. */
+	setIntent?(intent: string | undefined): void;
 	updateResult(
 		result: {
 			content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
@@ -317,6 +319,12 @@ export class ToolExecutionComponent extends Container {
 	// forcing the common image-free result to re-shape on every resize tick.
 	#renderedImageCount = 0;
 	#tool?: AgentTool;
+	// The intent omp resolves once at dispatch time (model `i` field, else
+	// `tool.intent(args)`) and forwards on `tool_execution_start`/persisted
+	// history. Distinct from `#callIntent()`'s own fallback recompute below: a
+	// tool with no `intent()` function (bash, for one) has no other way for its
+	// collapsed line to ever show intent text instead of a raw args preview.
+	#liveIntent: string | undefined;
 	#renderer?: ToolRenderer;
 	#ui: ToolExecutionUi;
 	#result?: {
@@ -427,6 +435,20 @@ export class ToolExecutionComponent extends Container {
 		this.#args = args;
 		this.#displayInputVersion++;
 		this.#updateSpinnerAnimation();
+		this.#updateDisplay();
+	}
+
+	/**
+	 * Sets the already-computed per-call intent (see `#liveIntent`'s field
+	 * comment). Callers pass `event.intent`/`content.intent` as soon as it's
+	 * available — typically later than construction, since it's resolved at
+	 * dispatch time while the card may already exist from streamed args.
+	 */
+	setIntent(intent: string | undefined): void {
+		const trimmed = intent?.trim() || undefined;
+		if (trimmed === this.#liveIntent) return;
+		this.#liveIntent = trimmed;
+		this.#displayInputVersion++;
 		this.#updateDisplay();
 	}
 
@@ -943,10 +965,11 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	/**
-	 * What this call says in one line. The wording is the per-call intent the
-	 * agent already computes (`i` arg, else `tool.intent(args)`); tools with
-	 * neither fall back to their label plus the same inline args preview the
-	 * generic card shows.
+	 * What this call says in one line. The wording is `#liveIntent` when the
+	 * caller has threaded it in via `setIntent`, else the per-call intent this
+	 * component can compute on its own (`i` arg still present on `#args`, else
+	 * `tool.intent(args)`); tools with neither fall back to their label plus
+	 * the same inline args preview the generic card shows.
 	 */
 	collapsedCall(): CollapsedToolCall {
 		const output = this.#result ? this.#getTextOutput().trimEnd() : "";
@@ -988,6 +1011,7 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	#callIntent(): string | undefined {
+		if (this.#liveIntent) return this.#liveIntent;
 		const args = isRecord(this.#args) ? this.#args : undefined;
 		const supplied = args?.[INTENT_FIELD];
 		if (typeof supplied === "string" && supplied.trim()) return supplied.trim().replace(/\s*\.+$/, "");

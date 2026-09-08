@@ -81,6 +81,40 @@ describe("collapsed tool-call lines", () => {
 		expect(line).toContain("3 lines");
 	});
 
+	test("setIntent threads a live intent onto a tool with no intent() implementation", () => {
+		// bash has no `intent()` function (see command-review.ts's DANGEROUS-pattern
+		// comment for the same fact) — before setIntent existed, this call could only
+		// ever render its raw args preview. omp resolves an intent for every call
+		// regardless (model `i` field, or a derived value) and forwards it via
+		// `tool_execution_start`/persisted history; setIntent is the seam that
+		// carries it onto the collapsed line.
+		const call = makeCall("bash", { command: "ssh ayusavin@mac-mini-home.tail4430", timeout: 20 }, { label: "Bash" }, { text: "a\nb" });
+		call.setIntent("Checking disk usage on mac-mini-home");
+		const line = plain(buildCollapsedToolCallLine(call.collapsedCall(), theme, 120));
+		expect(line).toContain("Checking disk usage on mac-mini-home");
+		expect(line).not.toContain("command=");
+	});
+
+	test("no threaded intent and no tool.intent(): falls back to label plus raw args preview", () => {
+		const call = makeCall("bash", { command: "ssh ayusavin@mac-mini-home.tail4430", timeout: 20 }, { label: "Bash" }, { text: "a\nb" });
+		const line = plain(buildCollapsedToolCallLine(call.collapsedCall(), theme, 120));
+		expect(line).toContain("Bash");
+		expect(line).toContain("command=");
+	});
+
+	test("a threaded intent on one call does not change the group summary line", () => {
+		const group = new ToolCallGroupComponent();
+		const a = makeCall("bash", { command: "a" }, { label: "Bash" }, { text: "ok" });
+		a.setIntent("Running the release script");
+		group.addCall(a);
+		group.addCall(makeCall("bash", { command: "b" }, { label: "Bash" }, { text: "ok" }));
+		group.addCall(makeCall("read", { path: "/tmp/x.md" }, { label: "Read" }, { text: "x" }));
+		const rows = group.render(120).map(plain);
+		expect(rows).toHaveLength(1);
+		expect(rows[0]).toContain("Ran 2 commands, read 1 file");
+		expect(rows[0]).not.toContain("Running the release script");
+	});
+
 	test("four calls in one turn render one summary row", () => {
 		const group = new ToolCallGroupComponent();
 		group.addCall(makeCall("bash", { command: "a" }, { label: "Bash" }, { text: "ok" }));

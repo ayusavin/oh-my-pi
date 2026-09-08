@@ -469,6 +469,7 @@ export class ChatTranscriptBuilder {
 				this.deps.cwd,
 				content.id,
 			);
+			component.setIntent(content.intent);
 			this.#trackExpandable(component);
 			this.container.addChild(component);
 

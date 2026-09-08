@@ -1622,6 +1622,7 @@ export class EventController {
 				component.updateStreamPreview(pendingPreview);
 				this.#pendingStreamPreviews.delete(event.toolCallId);
 			}
+			component.setIntent(event.intent);
 			component.setArgsComplete(event.toolCallId);
 			component.setExecutionStarted(event.toolCallId);
 			this.#executionStartedCallIds.add(event.toolCallId);
@@ -1646,6 +1647,7 @@ export class EventController {
 			const component = this.ctx.pendingTools.get(event.toolCallId);
 			if (component && typeof component.updateArgs === "function") {
 				component.updateArgs(event.args, event.toolCallId);
+				component.setIntent?.(event.intent);
 				if (typeof component.setArgsComplete === "function") {
 					component.setArgsComplete(event.toolCallId);
 				}
