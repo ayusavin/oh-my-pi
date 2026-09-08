@@ -10,7 +10,11 @@ import { formatFullOutputReference, formatStyledTruncationWarning, stripOutputNo
 import { isReadableUrlPath, splitInternalUrlSel, splitPathAndSel } from "./path-utils";
 import type { ReadToolDetails } from "./read";
 import { isRawSelector, parseSel } from "./read-selector";
-import { formatBytes, replaceTabs, shortenPath, wrapBrackets } from "./render-utils";
+import { formatBytes, replaceTabs, resolveCollapsedPreviewLines, shortenPath, wrapBrackets } from "./render-utils";
+
+/** Read tool's own fixed collapsed-view defaults (matches `renderCodeCell`/`renderMarkdownCell` defaults). */
+const READ_CODE_MAX_LINES = 12;
+const READ_OUTPUT_MAX_LINES = 6;
 
 // =============================================================================
 // TUI Renderer
@@ -243,11 +247,21 @@ export const readToolRenderer = {
 		const isMarkdown = details?.contentType === "text/markdown" && !rawRequested;
 		let cachedWidth: number | undefined;
 		let cachedExpanded: boolean | undefined;
+		let cachedMaxLines: number | undefined;
 		let cachedLines: string[] | undefined;
 		return markFramedBlockComponent({
 			render: (width: number) => {
 				const expanded = options.expanded;
-				if (cachedLines && cachedWidth === width && cachedExpanded === expanded) return cachedLines;
+				const codeMaxLines = resolveCollapsedPreviewLines(READ_CODE_MAX_LINES);
+				const outputMaxLines = resolveCollapsedPreviewLines(READ_OUTPUT_MAX_LINES);
+				if (
+					cachedLines &&
+					cachedWidth === width &&
+					cachedExpanded === expanded &&
+					cachedMaxLines === codeMaxLines
+				) {
+					return cachedLines;
+				}
 				cachedLines = isMarkdown
 					? renderMarkdownCell(
 							{
@@ -256,6 +270,8 @@ export const readToolRenderer = {
 								status: "complete",
 								output: warningLines.length > 0 ? warningLines.join("\n") : undefined,
 								expanded,
+								contentMaxLines: codeMaxLines,
+								outputMaxLines,
 								width,
 							},
 							uiTheme,
@@ -268,6 +284,8 @@ export const readToolRenderer = {
 								status: "complete",
 								output: warningLines.length > 0 ? warningLines.join("\n") : undefined,
 								expanded,
+								codeMaxLines,
+								outputMaxLines,
 								codeStartLine: details?.displayContent?.startLine,
 								codeLineNumbers: details?.displayContent?.lineNumbers,
 								width,
@@ -276,11 +294,13 @@ export const readToolRenderer = {
 						);
 				cachedWidth = width;
 				cachedExpanded = expanded;
+				cachedMaxLines = codeMaxLines;
 				return cachedLines;
 			},
 			invalidate: () => {
 				cachedWidth = undefined;
 				cachedExpanded = undefined;
+				cachedMaxLines = undefined;
 				cachedLines = undefined;
 			},
 		});

@@ -1140,6 +1140,11 @@ function renderAgentProgress(
 			{
 				max: previewRows,
 				expandHint: false,
+				// Live progress monitor for a still-running nested task, rendered only
+				// inside an already-expanded parent — bounded by the viewport
+				// regardless of `tools.collapsedPreviewLines`, since ctrl+o (already
+				// pressed here) must stay unaffected by that setting.
+				respectCollapsedPreviewSetting: false,
 			},
 		).join("\n");
 		lines.push(...renderOutputSection(output, continuePrefix, expanded, theme, 2, previewRows));

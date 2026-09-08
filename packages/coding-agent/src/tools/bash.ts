@@ -59,6 +59,7 @@ import {
 	formatToolWorkingDirectory,
 	previewWindowRows,
 	replaceTabs,
+	resolveCollapsedPreviewLines,
 } from "./render-utils";
 import { extractLeadingCdTarget, extractLiteralAndChainSegments, tokenizeShellSegments } from "./shell-tokenize";
 import { ToolAbortError, ToolError } from "./tool-errors";
@@ -1732,7 +1733,7 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 			let cachedRawOutput: string | undefined;
 			let cachedIsPartial: boolean | undefined;
 			let cachedLines: readonly string[] | undefined;
-			let cachedPreviewWindow: number | undefined;
+			let cachedPreviewBudget: number | undefined;
 
 			return markFramedBlockComponent({
 				render: (width: number): readonly string[] => {
@@ -1748,6 +1749,7 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 
 					const isPartial = options.isPartial === true;
 					const previewWindow = previewWindowRows();
+					const previewBudget = resolveCollapsedPreviewLines(Math.min(previewLines, previewWindow));
 
 					if (
 						cachedLines !== undefined &&
@@ -1756,7 +1758,7 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 						cachedExpanded === expanded &&
 						cachedRawOutput === rawOutput &&
 						cachedIsPartial === isPartial &&
-						cachedPreviewWindow === previewWindow
+						cachedPreviewBudget === previewBudget
 					) {
 						return cachedLines;
 					}
@@ -1835,7 +1837,6 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 							// and the engine re-commits a fresh snapshot every frame —
 							// spraying duplicate "… ctrl+o to expand" banners into native
 							// scrollback (the box never overflows the viewport now).
-							const previewBudget = Math.min(previewLines, previewWindow);
 							const result = truncateToVisualLines(textContent, previewBudget, outputBlockContentWidth(width));
 							if (result.skippedCount > 0) {
 								outputLines.push(
@@ -1873,7 +1874,7 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 					cachedExpanded = expanded;
 					cachedRawOutput = rawOutput;
 					cachedIsPartial = isPartial;
-					cachedPreviewWindow = previewWindow;
+					cachedPreviewBudget = previewBudget;
 					cachedLines = framed;
 					return framed;
 				},
@@ -1885,7 +1886,7 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 					cachedExpanded = undefined;
 					cachedRawOutput = undefined;
 					cachedIsPartial = undefined;
-					cachedPreviewWindow = undefined;
+					cachedPreviewBudget = undefined;
 				},
 			});
 		},

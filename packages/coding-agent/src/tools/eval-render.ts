@@ -40,6 +40,7 @@ import {
 	isFeedModelBadgeEnabled,
 	previewWindowRows,
 	replaceTabs,
+	resolveCollapsedPreviewLines,
 	shortenPath,
 	truncateToWidth,
 	wrapBrackets,
@@ -543,7 +544,8 @@ export const evalToolRenderer = {
 
 		return markFramedBlockComponent({
 			render: (width: number): readonly string[] => {
-				const key = `${options.expanded ? 1 : 0}|${options.spinnerFrame ?? "-"}|${previewWindowRows()}|${cells.map(c => `${c.language}:${c.title ?? ""}:${c.code.length}`).join("|")}`;
+				const codeMaxLines = resolveCollapsedPreviewLines(previewWindowRows());
+				const key = `${options.expanded ? 1 : 0}|${options.spinnerFrame ?? "-"}|${codeMaxLines}|${cells.map(c => `${c.language}:${c.title ?? ""}:${c.code.length}`).join("|")}`;
 				if (cached && cached.key === key && cached.width === width) {
 					return cached.result;
 				}
@@ -566,7 +568,7 @@ export const evalToolRenderer = {
 							// line; renderResult keeps the same cap so the cell never snaps
 							// open on completion. Only ctrl+o uncaps.
 							codeTail: true,
-							codeMaxLines: previewWindowRows(),
+							codeMaxLines,
 							expanded: options.expanded,
 						},
 						uiTheme,
@@ -637,11 +639,11 @@ export const evalToolRenderer = {
 			return markFramedBlockComponent({
 				render: (width: number): readonly string[] => {
 					const expanded = options.renderContext?.expanded ?? options.expanded;
-					const previewLines = Math.min(
-						options.renderContext?.previewLines ?? EVAL_DEFAULT_PREVIEW_LINES,
-						previewWindowRows(),
+					const codeMaxLines = resolveCollapsedPreviewLines(previewWindowRows());
+					const previewLines = resolveCollapsedPreviewLines(
+						Math.min(options.renderContext?.previewLines ?? EVAL_DEFAULT_PREVIEW_LINES, previewWindowRows()),
 					);
-					const key = `${expanded}|${previewLines}|${options.spinnerFrame}|${previewWindowRows()}`;
+					const key = `${expanded}|${previewLines}|${options.spinnerFrame}|${codeMaxLines}`;
 					if (cached && cached.key === key && cached.width === width) {
 						return cached.result;
 					}
@@ -683,7 +685,7 @@ export const evalToolRenderer = {
 								// cell never snaps open on completion; only ctrl+o uncaps.
 								// `output` keeps its own preview cap from above.
 								codeTail: true,
-								codeMaxLines: previewWindowRows(),
+								codeMaxLines,
 								expanded,
 								width,
 							},
@@ -780,9 +782,8 @@ export const evalToolRenderer = {
 
 		return {
 			render: (width: number): readonly string[] => {
-				const previewLines = Math.min(
-					options.renderContext?.previewLines ?? EVAL_DEFAULT_PREVIEW_LINES,
-					previewWindowRows(),
+				const previewLines = resolveCollapsedPreviewLines(
+					Math.min(options.renderContext?.previewLines ?? EVAL_DEFAULT_PREVIEW_LINES, previewWindowRows()),
 				);
 				if (cachedLines === undefined || cachedWidth !== width || cachedPreviewLines !== previewLines) {
 					const result = truncateToVisualLines(textContent, previewLines, width);

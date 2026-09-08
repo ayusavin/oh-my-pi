@@ -55,7 +55,13 @@ export function truncateToVisualLines(
 		return { visualLines: allVisualLines, skippedCount: 0 };
 	}
 
-	// Take the last N visual lines
+	if (maxVisualLines <= 0) {
+		return { visualLines: [], skippedCount: allVisualLines.length };
+	}
+
+	// Take the last N visual lines. `slice(-maxVisualLines)` would break for
+	// maxVisualLines === 0 (negative zero normalizes to 0, returning every
+	// line instead of none) — guarded above.
 	const truncatedLines = allVisualLines.slice(-maxVisualLines);
 	const skippedCount = allVisualLines.length - maxVisualLines;
 

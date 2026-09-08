@@ -13,7 +13,7 @@ import {
 	JSON_TREE_SCALAR_LEN_EXPANDED,
 	renderJsonTreeLines,
 } from "./json-tree";
-import { formatExpandHint, replaceTabs, truncateToWidth } from "./render-utils";
+import { formatExpandHint, replaceTabs, resolveCollapsedPreviewLines, truncateToWidth } from "./render-utils";
 
 /** Inputs rendered by the fallback card used when a tool has no bespoke renderer. */
 export interface DefaultToolRenderInput {
@@ -121,7 +121,7 @@ export function formatDefaultToolExecution(
 	}
 
 	const outputLines = textContent.split("\n");
-	const maxOutputLines = options.expanded ? 12 : 4;
+	const maxOutputLines = options.expanded ? 12 : resolveCollapsedPreviewLines(4);
 	const displayLines = outputLines.slice(0, maxOutputLines);
 
 	for (const line of displayLines) {

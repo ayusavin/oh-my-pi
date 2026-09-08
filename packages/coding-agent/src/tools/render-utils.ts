@@ -283,6 +283,22 @@ export function previewWindowRows(): number {
 }
 
 /**
+ * User override for how many lines a collapsed tool-output preview shows
+ * (`tools.collapsedPreviewLines`). Single choke point every collapsed-window
+ * computation in tool renderers routes through: `-1` (default) reproduces the
+ * caller's own `fallbackLines` unchanged — usually a viewport-scaled
+ * `previewWindowRows()` call or a fixed constant — so nothing changes for
+ * anyone who hasn't touched the setting. `0` collapses to no output lines;
+ * `N > 0` caps the collapsed tail at exactly `N` lines. Never call this for
+ * an expanded (ctrl+o) render — expansion must stay unaffected by the cap.
+ */
+export function resolveCollapsedPreviewLines(fallbackLines: number): number {
+	const activeSettings = isSettingsInitialized() ? settings : undefined;
+	const override = activeSettings?.get("tools.collapsedPreviewLines") ?? getDefault("tools.collapsedPreviewLines");
+	return override < 0 ? fallbackLines : override;
+}
+
+/**
  * Cap a pre-rendered command preview to a viewport-sized tail window: the end
  * of the command stays visible (it is the live edge while args stream) behind
  * an "… N earlier lines" marker on top. The same window applies while
@@ -292,15 +308,27 @@ export function previewWindowRows(): number {
  * `prefix` (raw, e.g. a dim tree gutter) is prepended to the marker line so
  * nested previews stay aligned. `expandHint: false` drops the "ctrl+o: Expand"
  * suffix for callers that cap even inside the expanded view (task recent
- * output), where the hint would point the wrong way.
+ * output), where the hint would point the wrong way. Those same "cap even
+ * inside the expanded view" callers pass `respectCollapsedPreviewSetting:
+ * false` — they are a live progress monitor bounded by the viewport, not the
+ * collapsed/expanded tool-output preview `tools.collapsedPreviewLines`
+ * governs, so ctrl+o's "expansion must be unaffected" guarantee holds even
+ * though this call never sets `expanded: true`.
  */
 export function capPreviewLines(
 	lines: string[],
 	theme: Theme,
-	options: { max?: number; expanded?: boolean; prefix?: string; expandHint?: boolean } = {},
+	options: {
+		max?: number;
+		expanded?: boolean;
+		prefix?: string;
+		expandHint?: boolean;
+		respectCollapsedPreviewSetting?: boolean;
+	} = {},
 ): string[] {
 	if (options.expanded) return lines;
-	const max = options.max ?? previewWindowRows();
+	const fallback = options.max ?? previewWindowRows();
+	const max = options.respectCollapsedPreviewSetting === false ? fallback : resolveCollapsedPreviewLines(fallback);
 	if (lines.length <= max) return lines;
 	const visible = max <= 1 ? [] : lines.slice(lines.length - (max - 1));
 	const hidden = lines.length - visible.length;
@@ -883,13 +911,17 @@ export function capParseErrors(
 export function createCachedComponent(
 	getExpanded: () => boolean,
 	compute: (width: number, expanded: boolean) => string[],
-	options: { paddingX?: number } = {},
+	options: { paddingX?: number; getExtraKey?: () => number } = {},
 ): Component {
 	let cached: { key: bigint; lines: string[] } | undefined;
 	return {
 		render(width: number): readonly string[] {
 			const expanded = getExpanded();
-			const key = new Hasher().bool(expanded).u32(width).digest();
+			const key = new Hasher()
+				.bool(expanded)
+				.u32(width)
+				.u32(options.getExtraKey?.() ?? 0)
+				.digest();
 			if (cached?.key === key) return cached.lines;
 			const paddingX = Math.max(0, options.paddingX ?? 0);
 			const innerWidth = Math.max(1, width - paddingX * 2);

@@ -74,6 +74,7 @@ import {
 	formatMoreItems,
 	PREVIEW_LIMITS,
 	replaceTabs,
+	resolveCollapsedPreviewLines,
 } from "./render-utils";
 import { ToolError } from "./tool-errors";
 import { toolResult } from "./tool-result";
@@ -1858,12 +1859,13 @@ export const grepToolRenderer = {
 			return createCachedComponent(
 				() => options.expanded,
 				width => {
+					const collapsedTextLimit = resolveCollapsedPreviewLines(COLLAPSED_TEXT_LIMIT);
 					const listLines = renderTreeList(
 						{
 							items: lines,
 							expanded: options.expanded,
-							maxCollapsed: COLLAPSED_TEXT_LIMIT,
-							maxCollapsedLines: COLLAPSED_TEXT_LIMIT,
+							maxCollapsed: collapsedTextLimit,
+							maxCollapsedLines: collapsedTextLimit,
 							itemType: "item",
 							renderItem: line => uiTheme.fg("toolOutput", line),
 						},
@@ -1871,7 +1873,7 @@ export const grepToolRenderer = {
 					);
 					return [header, ...listLines].map(l => truncateToWidth(l, width, Ellipsis.Omit));
 				},
-				{ paddingX: 1 },
+				{ paddingX: 1, getExtraKey: () => resolveCollapsedPreviewLines(COLLAPSED_TEXT_LIMIT) },
 			);
 		}
 
@@ -1938,14 +1940,15 @@ export const grepToolRenderer = {
 		return createCachedComponent(
 			() => options.expanded,
 			width => {
+				const collapsedTextLimit = resolveCollapsedPreviewLines(COLLAPSED_TEXT_LIMIT);
 				const budget = Math.max(
-					(options.expanded ? EXPANDED_TEXT_LIMIT : COLLAPSED_TEXT_LIMIT) - extraLines.length,
+					(options.expanded ? EXPANDED_TEXT_LIMIT : collapsedTextLimit) - extraLines.length,
 					0,
 				);
 				const matchLines = renderBudgetedSearchGroups(matchGroups, budget, matchCount, uiTheme, !options.expanded);
 				return [header, ...matchLines, ...extraLines].map(l => truncateToWidth(l, width, Ellipsis.Omit));
 			},
-			{ paddingX: 1 },
+			{ paddingX: 1, getExtraKey: () => resolveCollapsedPreviewLines(COLLAPSED_TEXT_LIMIT) },
 		);
 	},
 	mergeCallAndResult: true,

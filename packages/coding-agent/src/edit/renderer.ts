@@ -25,6 +25,7 @@ import {
 	previewWindowRows,
 	type RenderedStringCache,
 	replaceTabs,
+	resolveCollapsedPreviewLines,
 	shortenPath,
 	truncateDiffByHunk,
 } from "../tools/render-utils";
@@ -496,7 +497,9 @@ function formatStreamingDiff(
 	// the cheap raw-line wrap walk keeps the per-chunk cost bounded.
 	// innerWidth/budget are in the cache salt so a resize re-slices.
 	const innerWidth = Math.max(1, width - 2);
-	const budget = expanded ? previewWindowRows() : Math.min(EDIT_STREAMING_PREVIEW_LINES, previewWindowRows());
+	const budget = expanded
+		? previewWindowRows()
+		: resolveCollapsedPreviewLines(Math.min(EDIT_STREAMING_PREVIEW_LINES, previewWindowRows()));
 	let text = cachedRenderedString(cache, uiTheme, expanded, `${rawPath}:${innerWidth}:${budget}`, diff, () => {
 		// "Cursor" tail window: pin the last rows to the bottom so freshly streamed
 		// changes stay on screen. The whole-file diff is recomputed every chunk and
@@ -792,21 +795,24 @@ function renderDiffSection(
 	renderCache?: RenderedStringCache,
 	sectionCache?: RenderedStringCache,
 ): string {
-	return cachedRenderedString(sectionCache, uiTheme, expanded, `${rawPath}:${innerWidth}`, diff, () => {
+	const diffCollapsedLines = expanded
+		? PREVIEW_LIMITS.DIFF_COLLAPSED_LINES
+		: resolveCollapsedPreviewLines(PREVIEW_LIMITS.DIFF_COLLAPSED_LINES);
+	return cachedRenderedString(sectionCache, uiTheme, expanded, `${rawPath}:${innerWidth}:${diffCollapsedLines}`, diff, () => {
 		const {
 			text: truncatedDiff,
 			hiddenHunks,
 			hiddenLines: logicallyHiddenLines,
 		} = expanded
 			? { text: diff, hiddenHunks: 0, hiddenLines: 0 }
-			: truncateDiffByHunk(diff, PREVIEW_LIMITS.DIFF_COLLAPSED_HUNKS, PREVIEW_LIMITS.DIFF_COLLAPSED_LINES);
+			: truncateDiffByHunk(diff, PREVIEW_LIMITS.DIFF_COLLAPSED_HUNKS, diffCollapsedLines);
 
 		const renderedDiff = cachedRenderedString(renderCache, uiTheme, expanded, rawPath, truncatedDiff, () =>
 			renderDiffFn(truncatedDiff, { filePath: rawPath }),
 		);
 		const { text: visibleDiff, hiddenLines: visuallyHiddenLines } = expanded
 			? { text: renderedDiff, hiddenLines: 0 }
-			: sliceCollapsedDiffRows(renderedDiff, innerWidth, PREVIEW_LIMITS.DIFF_COLLAPSED_LINES);
+			: sliceCollapsedDiffRows(renderedDiff, innerWidth, diffCollapsedLines);
 		const hiddenLines = logicallyHiddenLines + visuallyHiddenLines;
 
 		let text = `\n${visibleDiff}`;
