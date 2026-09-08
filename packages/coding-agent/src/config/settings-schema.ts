@@ -543,6 +543,19 @@ export const SETTINGS_SCHEMA = {
 				"Pair a second model (assigned to the 'advisor' role) that passively reviews each turn and injects notes.",
 		},
 	},
+	"advisor.display": {
+		type: "enum",
+		values: ["all", "blockers", "none"] as const,
+		default: "all",
+		ui: {
+			tab: "model",
+			group: "Advisor",
+			label: "Advisor Display",
+			description:
+				"How advisor notes appear in the transcript: all shows every note, blockers shows only blocker-severity notes, none never renders a card (the advisor still runs and its notes still reach the agent).",
+			condition: "advisorEnabled",
+		},
+	},
 	"prewalk.enabled": {
 		type: "boolean",
 		default: false,
@@ -974,6 +987,26 @@ export const SETTINGS_SCHEMA = {
 				{ value: "1000", label: "1000 lines", description: "~5K tokens" },
 				{ value: "2000", label: "2000 lines", description: "~10K tokens" },
 				{ value: "5000", label: "5000 lines", description: "~25K tokens" },
+			],
+		},
+	},
+	"tools.collapsedPreviewLines": {
+		type: "number",
+		default: -1,
+		ui: {
+			tab: "tools",
+			group: "Output Limits",
+			label: "Collapsed Preview Lines",
+			description:
+				"Lines of tool output shown while a tool card is collapsed (bash, eval, read, grep, edit, and other tool previews). -1 keeps the terminal-height default (viewport-scaled); 0 hides output until expanded (ctrl+o); N shows exactly N lines.",
+			options: [
+				{ value: "-1", label: "Default", description: "Viewport-scaled terminal-height default" },
+				{ value: "0", label: "0", description: "Hide output until expanded" },
+				{ value: "3", label: "3" },
+				{ value: "5", label: "5" },
+				{ value: "10", label: "10" },
+				{ value: "20", label: "20" },
+				{ value: "40", label: "40" },
 			],
 		},
 	},

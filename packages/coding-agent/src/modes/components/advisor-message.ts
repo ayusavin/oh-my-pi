@@ -1,5 +1,6 @@
 import { type Component, visibleWidth } from "@oh-my-pi/pi-tui";
 import type { AdvisorMessageDetails, AdvisorSeverity } from "../../advisor";
+import { settings } from "../../config/settings";
 import {
 	createCachedComponent,
 	formatBadge,
@@ -51,8 +52,12 @@ export function createAdvisorMessageCard(
 	details: AdvisorMessageDetails | undefined,
 	getExpanded: () => boolean,
 	uiTheme: Theme,
-): Component {
-	const notes = details?.notes ?? [];
+): Component | null {
+	const displayMode = settings.get("advisor.display");
+	if (displayMode === "none") return null;
+	const allNotes = details?.notes ?? [];
+	const notes = displayMode === "blockers" ? allNotes.filter(note => note.severity === "blocker") : allNotes;
+	if (notes.length === 0) return null;
 	const blockers = notes.filter(note => note.severity === "blocker").length;
 	const meta: string[] = [`${notes.length} ${notes.length === 1 ? "note" : "notes"}`];
 	if (blockers > 0) meta.push(uiTheme.fg("error", `${blockers} blocker${blockers === 1 ? "" : "s"}`));
