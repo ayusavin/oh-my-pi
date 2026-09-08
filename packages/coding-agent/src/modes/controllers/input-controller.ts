@@ -30,7 +30,18 @@ import { tinyTitleClient } from "../../tiny/title-client";
 import type { TinyTitleProgressEvent } from "../../tiny/title-protocol";
 import { resolveReadPath } from "../../tools/path-utils";
 import { shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../../tools/render-utils";
-import { resolveToolCallDisplay, setToolCallExpandLevel, toolCallExpandLevel } from "../../tools/tool-call-display";
+import {
+	resolveExpandScope,
+	resolveToolCallDisplay,
+	setToolCallExpandLevel,
+	toolCallExpandLevel,
+} from "../../tools/tool-call-display";
+import {
+	BlockExpansionCursor,
+	type BlockSelection,
+	type ExpandableBlock,
+	isExpandableBlock,
+} from "../utils/block-expansion";
 import { vocalizer } from "../../tts/vocalizer";
 import {
 	copyToClipboard,
@@ -90,6 +101,17 @@ interface Expandable {
 
 function isExpandable(obj: unknown): obj is Expandable {
 	return typeof obj === "object" && obj !== null && "setExpanded" in obj && typeof obj.setExpanded === "function";
+}
+
+/** Status wording for one block's expansion level (`display.expandScope: block`). */
+function blockLevelWord(level: number, levels: number): string {
+	if (level === 0) return levels > 2 ? "collapsed row" : "collapsed";
+	if (level === 1) return "one line per call";
+	return levels > 2 ? "full cards" : "full output";
+}
+
+function describeBlockSelection(selection: BlockSelection): string {
+	return `${selection.position}/${selection.total} ${selection.block.blockExpandLabel()}`;
 }
 
 /** Minimal contract for any component that can receive a paste payload directly. */
@@ -199,6 +221,8 @@ export class InputController {
 	#btwBranchListenerInstalled = false;
 	#btwCopyListenerInstalled = false;
 	#expandToolsListenerInstalled = false;
+	/** Selected transcript block under `display.expandScope: block`; inert under `session`. */
+	#blockCursor = new BlockExpansionCursor();
 
 	/** Return the last full editor snapshot delivered by its change contract. */
 	getDraftText(): string {
@@ -580,6 +604,12 @@ export class InputController {
 		this.ctx.editor.onSpaceHoldEnd = () => void this.ctx.handleSTTToggle();
 		for (const key of this.ctx.keybindings.getKeys("app.clipboard.copyLine")) {
 			this.ctx.editor.setCustomKeyHandler(key, () => this.handleCopyCurrentLine());
+		}
+		for (const key of this.ctx.keybindings.getKeys("app.tools.selectOlder")) {
+			this.ctx.editor.setCustomKeyHandler(key, () => this.moveBlockSelection(-1));
+		}
+		for (const key of this.ctx.keybindings.getKeys("app.tools.selectNewer")) {
+			this.ctx.editor.setCustomKeyHandler(key, () => this.moveBlockSelection(1));
 		}
 		const hubKeys = new Set([
 			...this.ctx.keybindings.getKeys("app.agents.hub"),
@@ -2150,6 +2180,10 @@ export class InputController {
 			this.ctx.showStatus(`Tool activity is hidden — show it with ${visibilityHint} before expanding`);
 			return;
 		}
+		if (resolveExpandScope() === "block") {
+			this.#expandSelectedBlock();
+			return;
+		}
 		if (resolveToolCallDisplay() === "full") {
 			this.setToolsExpanded(!this.ctx.toolOutputExpanded);
 			this.ctx.showStatus(`Tool output expansion: ${this.ctx.toolOutputExpanded ? "enabled" : "disabled"}`);
@@ -2170,6 +2204,71 @@ export class InputController {
 		);
 	}
 
+	/**
+	 * `display.expandScope: block` — ctrl+o walks the selected block's own levels
+	 * and nothing else moves. A single call has two (collapsed line / full card);
+	 * a group of calls has three (summary row / one line per call / full cards),
+	 * and while it is expanded the move keys descend into its calls.
+	 */
+	#expandSelectedBlock(): void {
+		const { blocks, committed } = this.#liveToolBlocks();
+		const change = this.#blockCursor.cycle(blocks);
+		if (!change) {
+			this.ctx.showStatus(
+				committed > 0
+					? "No live tool block — earlier blocks are in terminal scrollback and can no longer change"
+					: "No tool blocks to expand",
+			);
+			return;
+		}
+		// Only this block's rows changed; every other live block keeps its state.
+		this.ctx.ui.requestRender(true);
+		this.ctx.showStatus(
+			`${describeBlockSelection(change)}: ${blockLevelWord(change.level, change.levels)} · ${this.#blockSelectionHint()}`,
+		);
+	}
+
+	/** Move the block cursor: `-1` one block older, `+1` one newer. Inert under `session` scope. */
+	moveBlockSelection(delta: number): void {
+		if (resolveExpandScope() !== "block") return;
+		if (this.ctx.hideToolActivity) {
+			this.ctx.showStatus("Tool activity is hidden");
+			return;
+		}
+		const { blocks, committed } = this.#liveToolBlocks();
+		const selection = this.#blockCursor.move(blocks, delta);
+		if (!selection) {
+			this.ctx.showStatus("No tool blocks to select");
+			return;
+		}
+		// Stated once, not once per block: a committed block cannot be re-rendered,
+		// so walking into scrollback could only ever print churn.
+		const notice =
+			selection.atOldest && committed > 0 && this.#blockCursor.takeCommittedNotice()
+				? " · earlier blocks are in terminal scrollback and can no longer change"
+				: "";
+		this.ctx.showStatus(`Selected ${describeBlockSelection(selection)}${notice} · ${this.#blockSelectionHint()}`);
+	}
+
+	/** Live tool blocks in transcript order, plus how many have retired into scrollback. */
+	#liveToolBlocks(): { blocks: ExpandableBlock[]; committed: number } {
+		const states = this.ctx.chatContainer.blockStates();
+		const blocks: ExpandableBlock[] = [];
+		let committed = 0;
+		this.ctx.chatContainer.children.forEach((child, index) => {
+			if (!isExpandableBlock(child)) return;
+			if (states[index] === "committed") committed++;
+			else blocks.push(child);
+		});
+		return { blocks, committed };
+	}
+
+	#blockSelectionHint(): string {
+		const older = this.ctx.keybindings.getDisplayString("app.tools.selectOlder");
+		const newer = this.ctx.keybindings.getDisplayString("app.tools.selectNewer");
+		return `${older}/${newer} to move`;
+	}
+
 	toggleToolActivityVisibility(): void {
 		this.ctx.hideToolActivity = !this.ctx.hideToolActivity;
 		this.ctx.settings.set("display.hideToolActivity", this.ctx.hideToolActivity);
@@ -2177,6 +2276,7 @@ export class InputController {
 		if (!this.ctx.hideToolActivity) {
 			this.ctx.toolOutputExpanded = false;
 			setToolCallExpandLevel(0);
+			if (resolveExpandScope() === "block") this.#blockCursor.reset(this.#liveToolBlocks().blocks);
 		}
 
 		for (const child of this.ctx.chatContainer.children) {
@@ -2201,6 +2301,10 @@ export class InputController {
 	setToolsExpanded(expanded: boolean): void {
 		this.ctx.toolOutputExpanded = expanded;
 		for (const child of this.ctx.chatContainer.children) {
+			// A session-wide toggle owns every block again: drop any per-block level
+			// a previous `display.expandScope: block` session left behind, otherwise
+			// that block would keep ignoring the session flag.
+			if (isExpandableBlock(child)) child.setBlockExpandLevel(undefined);
 			if (isExpandable(child)) {
 				child.setExpanded(expanded);
 			}

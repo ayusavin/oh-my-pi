@@ -24,6 +24,20 @@ export function resolveToolCallDisplay(): ToolCallDisplayMode {
 	return activeSettings?.get("display.toolCalls") ?? getDefault("display.toolCalls");
 }
 
+export type ExpandScope = "session" | "block";
+
+/**
+ * Active `display.expandScope`; `session` before settings are initialized.
+ *
+ * `session` is the historical behaviour: ctrl+o flips one session flag and
+ * every live block follows it. `block` moves expansion into the components
+ * themselves — see {@link BlockExpansionCursor}.
+ */
+export function resolveExpandScope(): ExpandScope {
+	const activeSettings = isSettingsInitialized() ? settings : undefined;
+	return activeSettings?.get("display.expandScope") ?? getDefault("display.expandScope");
+}
+
 /**
  * Ctrl+O steps through three levels when `display.toolCalls` is not `full`:
  * 0 = collapsed (group row, or one line per call under `compact`), 1 = one line
@@ -107,7 +121,7 @@ function outcomeText(call: CollapsedToolCall): string {
 }
 
 /** Title half of the line: the call's intent, or the tool label plus its args preview. */
-function callTitle(call: CollapsedToolCall): string {
+export function callTitle(call: CollapsedToolCall): string {
 	const intent = call.intent?.trim();
 	if (intent) return intent;
 	const preview = call.argsPreview?.trim();

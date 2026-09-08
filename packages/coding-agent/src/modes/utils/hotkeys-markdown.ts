@@ -50,6 +50,8 @@ export function buildHotkeysMarkdown(bindings: HotkeysMarkdownBindings): string 
 		`| \`${appKey(bindings, "app.plan.toggle")}\` | Toggle plan mode |`,
 		`| \`${appKey(bindings, "app.history.search")}\` | Search prompt history |`,
 		`| \`${appKey(bindings, "app.tools.expand")}\` | Toggle tool output expansion |`,
+		`| \`${appKey(bindings, "app.tools.selectOlder")}\` | Select previous tool block (display.expandScope: block) |`,
+		`| \`${appKey(bindings, "app.tools.selectNewer")}\` | Select next tool block (display.expandScope: block) |`,
 		`| \`${appKey(bindings, "app.tools.toggleVisibility")}\` | Toggle tool activity visibility |`,
 		`| \`${appKey(bindings, "app.thinking.toggle")}\` | Toggle thinking block visibility |`,
 		`| \`${appKey(bindings, "app.editor.external")}\` | Edit message in external editor |`,

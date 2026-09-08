@@ -26,10 +26,12 @@ import { formatArgsInline } from "../../tools/json-tree";
 import { formatStatusIcon, replaceTabs, resolveImageOptions } from "../../tools/render-utils";
 import {
 	buildCollapsedToolCallLine,
+	callTitle,
 	type CollapsedToolCall,
 	resolveToolCallDisplay,
 	toolCallExpandLevel,
 } from "../../tools/tool-call-display";
+import type { ExpandableBlock } from "../utils/block-expansion";
 import {
 	type FirstResultViewportRepaint,
 	type ToolActivitySummary,
@@ -281,6 +283,9 @@ export class ToolExecutionComponent extends Container {
 	#toolLabel: string;
 	#args: any;
 	#expanded = false;
+	// Set only under `display.expandScope: block`, where expansion belongs to the
+	// component instead of the session flag; `undefined` follows the session.
+	#blockExpandLevel: number | undefined;
 	#allocation = Number.POSITIVE_INFINITY;
 	#presentationFrame: AnimationFrame = { tick: 0, now: 0 };
 	#toolActivityVisible = true;
@@ -791,6 +796,34 @@ export class ToolExecutionComponent extends Container {
 		this.#updateDisplay();
 	}
 
+	// ── ExpandableBlock (display.expandScope: block) ─────────────────────────
+	// A single call has two states, not three: `toolCallExpandLevel` 0 and 1 both
+	// render the collapsed line (level 1 only ever meant "the group hands its
+	// rows back to its calls"), so cycling through 1 here would be a dead
+	// keypress. Level 2 is the untouched card, which is also what `full`
+	// rendering expands to.
+
+	blockExpandLevel(): number {
+		return this.#blockExpandLevel ?? toolCallExpandLevel();
+	}
+
+	setBlockExpandLevel(level: number | undefined): void {
+		this.#blockExpandLevel = level === undefined ? undefined : Math.max(0, Math.min(2, level));
+		if (this.#blockExpandLevel !== undefined) this.setExpanded(this.#blockExpandLevel === 2);
+	}
+
+	blockExpandCycle(): readonly number[] {
+		return [0, 2];
+	}
+
+	expandedBlockCalls(): readonly ExpandableBlock[] {
+		return [];
+	}
+
+	blockExpandLabel(): string {
+		return callTitle(this.collapsedCall());
+	}
+
 	/** Apply the transcript allocator's current viewport reservation. */
 	setTranscriptAllocation(rows: number, frame: AnimationFrame): void {
 		this.#allocation = Math.max(0, Math.trunc(rows));
@@ -866,7 +899,7 @@ export class ToolExecutionComponent extends Container {
 		// bespoke-framed tools (bash, read, grep, edit, eval) and the generic card
 		// alike, without touching a single tool renderer. Expand level 2 falls
 		// through to today's rendering unchanged.
-		if (resolveToolCallDisplay() !== "full" && toolCallExpandLevel() < 2) {
+		if (resolveToolCallDisplay() !== "full" && this.blockExpandLevel() < 2) {
 			return [buildCollapsedToolCallLine(this.collapsedCall(), theme, width)];
 		}
 		let lines = super.render(width);

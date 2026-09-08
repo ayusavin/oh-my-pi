@@ -1377,6 +1377,23 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"display.expandScope": {
+		type: "enum",
+		values: ["session", "block"] as const,
+		default: "session",
+		ui: {
+			tab: "appearance",
+			group: "Display",
+			label: "Expansion Scope",
+			description:
+				"What ctrl+o expands. session flips one flag for the whole transcript, so every live tool block changes at once. block expands only the selected block: the cursor starts at the newest tool block, alt+k / alt+j move it, and inside an expanded group the same keys move between that group's calls. Blocks already retired into terminal scrollback cannot change under either scope.",
+			options: [
+				{ value: "session", label: "Session", description: "Default; ctrl+o expands every live tool block" },
+				{ value: "block", label: "Block", description: "ctrl+o expands only the selected block or call" },
+			],
+		},
+	},
+
 	"display.showTokenUsage": {
 		type: "boolean",
 		default: false,

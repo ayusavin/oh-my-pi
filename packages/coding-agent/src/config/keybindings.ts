@@ -30,6 +30,8 @@ interface AppKeybindings {
 	"app.model.select": true;
 	"app.model.selectTemporary": true;
 	"app.tools.expand": true;
+	"app.tools.selectOlder": true;
+	"app.tools.selectNewer": true;
 	"app.tools.toggleVisibility": true;
 	"app.editor.external": true;
 	"app.message.followUp": true;
@@ -125,6 +127,17 @@ export const KEYBINDINGS = {
 	"app.tools.expand": {
 		defaultKeys: "ctrl+o",
 		description: "Expand tools",
+	},
+	// Alt+J / Alt+K are the only vim-shaped pair left free: Alt+Up/Shift+Up are
+	// `app.message.dequeue`, Alt+Left/Right are word motions, Ctrl+P/Ctrl+N sit
+	// on the model cycle and the extension-reserved list (docs/extensions.md).
+	"app.tools.selectOlder": {
+		defaultKeys: "alt+k",
+		description: "Select the previous tool block (display.expandScope: block)",
+	},
+	"app.tools.selectNewer": {
+		defaultKeys: "alt+j",
+		description: "Select the next tool block (display.expandScope: block)",
 	},
 	"app.tools.toggleVisibility": {
 		defaultKeys: "ctrl+shift+o",

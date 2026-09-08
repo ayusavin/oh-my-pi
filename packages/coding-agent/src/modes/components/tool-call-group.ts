@@ -1,6 +1,12 @@
 import { type Component, Container } from "@oh-my-pi/pi-tui";
-import { buildGroupedToolCallLine, type CollapsedToolCall, toolCallExpandLevel } from "../../tools/tool-call-display";
+import {
+	buildGroupedToolCallLine,
+	type CollapsedToolCall,
+	summarizeToolCalls,
+	toolCallExpandLevel,
+} from "../../tools/tool-call-display";
 import { theme } from "../theme/theme";
+import type { ExpandableBlock } from "../utils/block-expansion";
 import type { ToolActivityComponent } from "./tool-activity";
 import type { ToolExecutionComponent } from "./tool-execution";
 
@@ -17,6 +23,8 @@ import type { ToolExecutionComponent } from "./tool-execution";
 export class ToolCallGroupComponent extends Container implements ToolActivityComponent {
 	#sealed = false;
 	#toolActivityVisible = true;
+	// Set only under `display.expandScope: block`; `undefined` follows the session.
+	#blockExpandLevel: number | undefined;
 
 	addCall(component: ToolExecutionComponent): void {
 		this.addChild(component);
@@ -52,6 +60,48 @@ export class ToolCallGroupComponent extends Container implements ToolActivityCom
 		}
 	}
 
+	// ── ExpandableBlock (display.expandScope: block) ─────────────────────────
+	// The three levels the user walks live here, not on a single call: 0 = the
+	// summary row, 1 = one line per call (and the cursor may descend into them),
+	// 2 = every call's full card.
+
+	blockExpandLevel(): number {
+		return this.#blockExpandLevel ?? toolCallExpandLevel();
+	}
+
+	setBlockExpandLevel(level: number | undefined): void {
+		this.#blockExpandLevel = level === undefined ? undefined : Math.max(0, Math.min(2, level));
+		// Level 1 hands the rows back to the calls at *their* collapsed level; an
+		// individually expanded call is reset by this deliberate group gesture.
+		for (const child of this.children) {
+			(child as Partial<ExpandableBlock>).setBlockExpandLevel?.(
+				this.#blockExpandLevel === undefined ? undefined : this.#blockExpandLevel === 2 ? 2 : 0,
+			);
+		}
+		this.invalidate();
+	}
+
+	blockExpandCycle(): readonly number[] {
+		return [0, 1, 2];
+	}
+
+	expandedBlockCalls(): readonly ExpandableBlock[] {
+		if (this.blockExpandLevel() === 0) return [];
+		return this.children.filter(
+			(child): child is Component & ExpandableBlock =>
+				typeof (child as Partial<ExpandableBlock>).blockExpandLevel === "function",
+		);
+	}
+
+	blockExpandLabel(): string {
+		const calls: CollapsedToolCall[] = [];
+		for (const child of this.children) {
+			const call = (child as Partial<ToolExecutionComponent>).collapsedCall?.();
+			if (call) calls.push(call);
+		}
+		return calls.length > 0 ? summarizeToolCalls(calls) : "Tool calls";
+	}
+
 	setToolActivityVisible(visible: boolean): void {
 		if (this.#toolActivityVisible === visible) return;
 		this.#toolActivityVisible = visible;
@@ -66,7 +116,7 @@ export class ToolCallGroupComponent extends Container implements ToolActivityCom
 		if (!this.#toolActivityVisible) return [];
 		// A lone call reads better as its own collapsed line than as a summary of
 		// one, and any expansion hands the rows back to the calls themselves.
-		if (toolCallExpandLevel() > 0 || this.children.length < 2) return super.render(width);
+		if (this.blockExpandLevel() > 0 || this.children.length < 2) return super.render(width);
 		const calls: CollapsedToolCall[] = [];
 		for (const child of this.children) {
 			const call = (child as Partial<ToolExecutionComponent>).collapsedCall?.();
