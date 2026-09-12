@@ -16,7 +16,7 @@ import {
 	shouldRenderAbortReason,
 } from "../../session/messages";
 import { createIrcMessageCard } from "../../tools/hub";
-import { replaceTabs, TRUNCATE_LENGTHS, truncateToWidth } from "../../tools/render-utils";
+import { Ellipsis, replaceTabs, TRUNCATE_LENGTHS, truncateToWidth } from "../../tools/render-utils";
 import { canonicalizeMessage } from "../../utils/thinking-display";
 import { ToolActivityContainer } from "../components/tool-activity";
 import { TranscriptBlock } from "../components/transcript-container";
@@ -56,10 +56,17 @@ export function buildAsyncResultBlock(message: CustomOrHookMessage): ToolActivit
 		const jobId = job.jobId ?? "unknown";
 		const typeLabel = job.type ? `[${job.type}]` : "[job]";
 		const duration = typeof job.durationMs === "number" ? formatDuration(job.durationMs) : undefined;
+		// C6: an internal id never stands alone on this row — prefer the job's
+		// own human label (a background bash job's label is its command text,
+		// set at spawn time) and keep the id as a muted aside instead of the
+		// row's only identifier. No label available: fall back to the id, the
+		// only identifier the payload actually carries.
+		const name = job.label ? truncateToWidth(job.label, TRUNCATE_LENGTHS.TITLE, Ellipsis.Unicode) : jobId;
 		const line = [
 			theme.fg("success", `${theme.status.done} Background job completed`),
 			theme.fg("dim", typeLabel),
-			theme.fg("accent", jobId),
+			theme.fg("accent", name),
+			job.label ? theme.fg("dim", `(${jobId})`) : undefined,
 			duration ? theme.fg("dim", `(${duration})`) : undefined,
 		]
 			.filter(Boolean)

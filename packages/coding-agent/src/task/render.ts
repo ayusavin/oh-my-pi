@@ -42,6 +42,7 @@ import { framedBlock, outputBlockContentWidth, renderStatusLine } from "../tui";
 import { repairDoubleEncodedJsonString } from "./repair-args";
 import { subprocessToolRegistry } from "./subprocess-tool-registry";
 import type { AgentProgress, SingleResult, TaskItem, TaskParams, TaskToolDetails, YieldItem } from "./types";
+import type { ToolActivitySummary } from "../tools/renderers";
 import { assembleYieldResult } from "./yield-assembly";
 
 /** Render context threaded in from `ToolExecutionComponent.#buildRenderContext`. */
@@ -706,6 +707,31 @@ function formatAgentHeaderLabel(args: Partial<TaskParams> | undefined): string |
 	if (!args) return undefined;
 	const flat = typeof args.agent === "string" ? args.agent.trim() : "";
 	return flat || undefined;
+}
+
+/** The one task's own identity: its stable `name` when set, else the first
+ * line of its `task` brief (the same secondary text a batch row shows). */
+function taskItemLabel(item: Partial<TaskItem> | undefined): string | undefined {
+	if (!item) return undefined;
+	if (typeof item.name === "string" && item.name.trim()) return item.name.trim();
+	return taskFirstLine(item.task) || undefined;
+}
+
+/**
+ * Compact one-line activity (C1): the one task's own name/text for a single
+ * dispatch, a count naming what is being run for a batch — never the raw
+ * `tasks` array (C6).
+ */
+export function activitySummary(args: unknown): ToolActivitySummary {
+	const params = (args ?? {}) as Partial<TaskParams>;
+	const tasks = Array.isArray(params.tasks) ? params.tasks : undefined;
+	if (tasks && tasks.length > 0) {
+		if (tasks.length > 1) return { label: "Task", detail: `${tasks.length} tasks` };
+		const detail = taskItemLabel(tasks[0]);
+		return detail ? { label: "Task", detail } : { label: "Task" };
+	}
+	const detail = taskItemLabel(params);
+	return detail ? { label: "Task", detail } : { label: "Task" };
 }
 
 /** Dim `⟨agent⟩` badge for a non-default agent type; empty for the generic worker. */
