@@ -176,16 +176,25 @@ interface GroupNoun {
 /**
  * Evidenced collective nouns for a group row (C5): a count and an object
  * naming what happened (`3 shell commands`), not how many calls there were.
- * A tool with no specific mapping falls back to the MCP-call convention
- * Claude Code itself uses for an unnamed tool (`Called <label> N times`) —
- * still a named tool, never a bare, contentless call count.
+ * Covers every built-in tool that can appear in a real run, so the fallback
+ * below is reserved for a genuinely unknown (MCP) tool — never a built-in.
+ * A tool with no mapping falls back to the MCP-call convention Claude Code
+ * itself uses for an unnamed tool (`Called <label> N times`) — still a named
+ * tool, never a bare, contentless call count.
  */
 const GROUP_NOUNS: Record<string, GroupNoun> = {
 	bash: { singular: "shell command", plural: "shell commands" },
+	read: { singular: "file read", plural: "files read" },
 	write: { singular: "file written", plural: "files written" },
 	edit: { singular: "file edited", plural: "files edited" },
 	apply_patch: { singular: "file edited", plural: "files edited" },
+	grep: { singular: "search", plural: "searches" },
+	glob: { singular: "glob", plural: "globs" },
+	eval: { singular: "eval", plural: "evals" },
+	hub: { singular: "hub call", plural: "hub calls" },
 	task: { singular: "agent finished", plural: "agents finished" },
+	ask: { singular: "question asked", plural: "questions asked" },
+	todo: { singular: "todo update", plural: "todo updates" },
 };
 
 function groupPhrase(toolName: string, label: string, count: number): string {

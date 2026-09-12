@@ -1285,7 +1285,11 @@ export class EventController {
 				this.#streamedToolCallIdByIndex.set(contentIndex, content.id);
 				const tool = this.ctx.viewSession.getToolByName(content.name);
 				const renderToolName = toolRenderName(content.name, tool);
-				if (renderToolName === "read") {
+				const compactMode = compactToolCallMode(settings.get("display.toolCalls"));
+				// `display.toolCalls: compact`/`grouped` folds a collapsible read into
+				// the same compact group as any other call (Compact rendering
+				// contract); `ReadToolGroupComponent` stays the `full`-mode path only.
+				if (renderToolName === "read" && !compactMode) {
 					if (!readArgsHaveTarget(content.arguments)) {
 						// Args still streaming — defer until path is parseable so we can route to the
 						// read group (files + xd:// devices) vs ToolExecutionComponent (other internal URLs).
@@ -1341,7 +1345,6 @@ export class EventController {
 				if (!this.ctx.pendingTools.has(content.id) && !this.#toolTimelineComponents.has(content.id)) {
 					this.#resolveDisplaceablePoll(renderToolName);
 					this.#resetReadGroup();
-					const compactMode = compactToolCallMode(settings.get("display.toolCalls"));
 					if (compactMode) {
 						const { group } = mountCompactToolCall(this.ctx.chatContainer, this.#toolGroup, compactMode, this.ctx.toolOutputExpanded, content.id, renderToolName, renderArgs, tool);
 						this.ctx.pendingTools.set(content.id, group);
@@ -1592,6 +1595,7 @@ export class EventController {
 		this.#updateWorkingMessageFromIntent(event.intent);
 		const tool = this.ctx.viewSession.getToolByName(event.toolName);
 		const renderToolName = toolRenderName(event.toolName, tool);
+		const compactMode = compactToolCallMode(settings.get("display.toolCalls"));
 		if (renderToolName === "ask" || this.#toolWillPromptForApproval(renderToolName, event.args)) {
 			this.#approvalAttentionToolCallIds.add(event.toolCallId);
 			setTerminalTitleState("attention");
@@ -1606,7 +1610,10 @@ export class EventController {
 					this.ctx.chatContainer.removeChild(stale);
 				}
 			}
-			if (renderToolName === "read" && readArgsCollapseIntoGroup(event.args)) {
+			// `display.toolCalls: compact`/`grouped` folds a collapsible read into
+			// the same compact group as any other call; `ReadToolGroupComponent`
+			// stays the `full`-mode path only.
+			if (renderToolName === "read" && readArgsCollapseIntoGroup(event.args) && !compactMode) {
 				this.#resetToolGroup();
 				this.#trackReadToolCall(event.toolCallId, event.args);
 				const component = this.ctx.pendingTools.get(event.toolCallId);
@@ -1624,7 +1631,6 @@ export class EventController {
 			}
 
 			this.#resetReadGroup();
-			const compactMode = compactToolCallMode(settings.get("display.toolCalls"));
 			if (compactMode) {
 				const { group } = mountCompactToolCall(this.ctx.chatContainer, this.#toolGroup, compactMode, this.ctx.toolOutputExpanded, event.toolCallId, renderToolName, event.args, tool);
 				group.setExecutionStarted(event.toolCallId);

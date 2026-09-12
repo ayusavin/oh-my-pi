@@ -133,7 +133,8 @@ describe("EventController compact tool-group visible-content reset", () => {
 		expect(groups).toHaveLength(1);
 		const row = compactRow(groups[0]!);
 		expect(row).toContain("2 shell commands");
-		expect(row).toContain("Called grep once");
+		expect(row).toContain("1 search");
+		expect(row).not.toContain("Called grep");
 	});
 
 	it("the read group keeps upstream's own signal, untouched by the screen-visible split", async () => {
