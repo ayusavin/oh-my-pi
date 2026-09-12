@@ -1,6 +1,5 @@
 import { type Component, visibleWidth } from "@oh-my-pi/pi-tui";
 import type { AdvisorMessageDetails, AdvisorSeverity } from "../../advisor";
-import { settings } from "../../config/settings";
 import {
 	createCachedComponent,
 	formatBadge,
@@ -62,8 +61,11 @@ export function createAdvisorMessageCard(
 	details: AdvisorMessageDetails | undefined,
 	getExpanded: () => boolean,
 	uiTheme: Theme,
+	display?: unknown,
 ): Component | undefined {
-	const displayMode = resolveAdvisorDisplayMode(settings.get("advisor.display"));
+	// The mode arrives from the call site, which already holds settings: this
+	// component stays renderable without an initialized settings singleton.
+	const displayMode = resolveAdvisorDisplayMode(display);
 	if (displayMode === "none") return undefined;
 	const allNotes = details?.notes ?? [];
 	const notes = displayMode === "blockers" ? allNotes.filter(note => note.severity === "blocker") : allNotes;

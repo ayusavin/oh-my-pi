@@ -53,7 +53,7 @@ describe("advisor.display", () => {
 	});
 
 	it("all draws every note, blocking and non-blocking alike — upstream's card, unchanged", () => {
-		const card = createAdvisorMessageCard({ notes: NOTES }, () => true, uiTheme);
+		const card = createAdvisorMessageCard({ notes: NOTES }, () => true, uiTheme, settings.get("advisor.display"));
 		expect(card).toBeDefined();
 		const text = plain(card!.render(80));
 		expect(text).toContain("2 notes");
@@ -64,7 +64,7 @@ describe("advisor.display", () => {
 
 	it("blockers draws the blocking note and omits the non-blocking one", () => {
 		settings.set("advisor.display", "blockers");
-		const card = createAdvisorMessageCard({ notes: NOTES }, () => true, uiTheme);
+		const card = createAdvisorMessageCard({ notes: NOTES }, () => true, uiTheme, settings.get("advisor.display"));
 		expect(card).toBeDefined();
 		const text = plain(card!.render(80));
 		expect(text).toContain("1 note");
@@ -78,13 +78,14 @@ describe("advisor.display", () => {
 			{ notes: [{ note: "watch the empty case", severity: "nit" }] },
 			() => true,
 			uiTheme,
+			settings.get("advisor.display"),
 		);
 		expect(card).toBeUndefined();
 	});
 
 	it("none draws no card, blocking or not", () => {
 		settings.set("advisor.display", "none");
-		const card = createAdvisorMessageCard({ notes: NOTES }, () => true, uiTheme);
+		const card = createAdvisorMessageCard({ notes: NOTES }, () => true, uiTheme, settings.get("advisor.display"));
 		expect(card).toBeUndefined();
 	});
 
@@ -115,7 +116,7 @@ describe("advisor.display", () => {
 
 			// Card rendering must never filter the message's own payload.
 			const details: AdvisorMessageDetails = { notes: NOTES };
-			createAdvisorMessageCard(details, () => true, uiTheme);
+			createAdvisorMessageCard(details, () => true, uiTheme, settings.get("advisor.display"));
 			expect(details.notes).toBe(NOTES);
 			expect(details.notes).toHaveLength(2);
 		});

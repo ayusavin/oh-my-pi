@@ -573,7 +573,7 @@ export class ChatTranscriptBuilder {
 		}
 		if (message.customType === "advisor") {
 			const details = (message as CustomMessage<AdvisorMessageDetails>).details;
-			const card = createAdvisorMessageCard(details, () => this.#expanded, theme);
+			const card = createAdvisorMessageCard(details, () => this.#expanded, theme, settings.get("advisor.display"));
 			if (card) this.container.addChild(card);
 			return;
 		}
