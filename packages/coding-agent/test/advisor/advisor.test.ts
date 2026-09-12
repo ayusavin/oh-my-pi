@@ -6296,7 +6296,7 @@ describe("advisor", () => {
 				() => true,
 				uiTheme,
 			);
-			const text = strip(card.render(80));
+			const text = strip(card!.render(80));
 			expect(text).toContain("Advisor");
 			expect(text).toContain("2 notes");
 			expect(text).toContain("blocker");
@@ -6317,7 +6317,7 @@ describe("advisor", () => {
 				() => true,
 				uiTheme,
 			);
-			const text = strip(card.render(80));
+			const text = strip(card!.render(80));
 			expect(text).toContain("[Architecture]");
 			expect(text).toContain("module boundary leak");
 			// The implicit "default" advisor stays unlabeled.
@@ -6329,7 +6329,7 @@ describe("advisor", () => {
 			if (!uiTheme) throw new Error("theme unavailable");
 			const notes = Array.from({ length: 5 }, (_, i) => ({ note: `note ${i}` }));
 			const card = createAdvisorMessageCard({ notes }, () => false, uiTheme);
-			const text = strip(card.render(80));
+			const text = strip(card!.render(80));
 			expect(text).toContain("note 0");
 			expect(text).toContain("+2 more");
 			expect(text).not.toContain("note 4");
@@ -6341,7 +6341,7 @@ describe("advisor", () => {
 			const note =
 				"This is a very long advisor note that will definitely exceed the restricted width constraint of thirty characters and should therefore wrap across multiple lines rather than getting truncated.";
 			const card = createAdvisorMessageCard({ notes: [{ note, severity: "concern" }] }, () => true, uiTheme);
-			const text = strip(card.render(30));
+			const text = strip(card!.render(30));
 			expect(text).toContain("truncated.");
 		});
 
@@ -6351,7 +6351,7 @@ describe("advisor", () => {
 			const note =
 				"This is a very long advisor note that will definitely exceed the restricted width constraint of thirty characters and should therefore wrap across multiple lines rather than getting truncated.";
 			const card = createAdvisorMessageCard({ notes: [{ note, severity: "concern" }] }, () => false, uiTheme);
-			const text = strip(card.render(30));
+			const text = strip(card!.render(30));
 			expect(text).toContain("truncated.");
 		});
 	});
