@@ -607,6 +607,19 @@ export const SETTINGS_SCHEMA = {
 			condition: "advisorEnabled",
 		},
 	},
+	"advisor.display": {
+		type: "enum",
+		values: ["all", "blockers", "none"] as const,
+		default: "all",
+		ui: {
+			tab: "model",
+			group: "Advisor",
+			label: "Advisor Display",
+			description:
+				"How advisor notes render in the transcript: all shows every note (default), blockers shows only blocker-severity notes, none draws no card. Display-only — the advisor keeps running and every note still reaches the agent's context in every mode.",
+			condition: "advisorEnabled",
+		},
+	},
 	shellPath: { type: "string", default: undefined },
 	"git.enabled": {
 		type: "boolean",

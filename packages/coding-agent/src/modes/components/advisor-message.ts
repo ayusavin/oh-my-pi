@@ -1,5 +1,6 @@
 import { type Component, visibleWidth } from "@oh-my-pi/pi-tui";
 import type { AdvisorMessageDetails, AdvisorSeverity } from "../../advisor";
+import { settings } from "../../config/settings";
 import {
 	createCachedComponent,
 	formatBadge,
@@ -12,6 +13,16 @@ import type { Theme } from "../theme/theme";
 
 const COLLAPSED_NOTES = 3;
 const NOTE_LINE_WIDTH = 110;
+
+/**
+ * Narrow an `advisor.display` value to a mode this card draws differently.
+ * Anything else — an unset key, or a settings source that does not resolve
+ * it (undefined, some other type) — yields "all", so the card renders
+ * exactly as it did before this setting existed.
+ */
+export function resolveAdvisorDisplayMode(value: unknown): "all" | "blockers" | "none" {
+	return value === "blockers" || value === "none" ? value : "all";
+}
 
 function wrapVarying(text: string, w1: number, w2: number): string[] {
 	if (text.length === 0) return [];
@@ -51,8 +62,12 @@ export function createAdvisorMessageCard(
 	details: AdvisorMessageDetails | undefined,
 	getExpanded: () => boolean,
 	uiTheme: Theme,
-): Component {
-	const notes = details?.notes ?? [];
+): Component | undefined {
+	const displayMode = resolveAdvisorDisplayMode(settings.get("advisor.display"));
+	if (displayMode === "none") return undefined;
+	const allNotes = details?.notes ?? [];
+	const notes = displayMode === "blockers" ? allNotes.filter(note => note.severity === "blocker") : allNotes;
+	if (displayMode === "blockers" && notes.length === 0) return undefined;
 	const blockers = notes.filter(note => note.severity === "blocker").length;
 	const meta: string[] = [`${notes.length} ${notes.length === 1 ? "note" : "notes"}`];
 	if (blockers > 0) meta.push(uiTheme.fg("error", `${blockers} blocker${blockers === 1 ? "" : "s"}`));
