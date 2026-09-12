@@ -32,7 +32,7 @@ import {
 import { SkillMessageComponent } from "../../modes/components/skill-message";
 import { StrippedToolCallsPlaceholder } from "../../modes/components/stripped-tool-calls-placeholder";
 import { ToolActivityContainer } from "../../modes/components/tool-activity";
-import { compactToolCallMode, type CompactToolGroupHolder, mountCompactToolCall } from "../../modes/components/tool-call-compact";
+import { compactToolCallMode, type CompactToolGroupHolder, mountCompactToolCall, resetCompactToolGroup } from "../../modes/components/tool-call-compact";
 import {
 	ToolExecutionComponent,
 	type ToolExecutionHandle,
@@ -421,6 +421,7 @@ export class UiHelpers {
 			if (!usageAttached) {
 				readGroup?.seal();
 				readGroup = null;
+				resetCompactToolGroup(toolGroup, true);
 				this.ctx.chatContainer.addChild(
 					createUsageRowBlock(
 						pendingUsage,
@@ -519,6 +520,7 @@ export class UiHelpers {
 					// a pending entry otherwise keeps the group active indefinitely.
 					readGroup?.seal();
 					readGroup = null;
+					resetCompactToolGroup(toolGroup, true);
 				}
 				const errorPresentation = resolveAssistantErrorPresentation(message, this.ctx.viewSession.retryAttempt);
 				const hasErrorStop = errorPresentation.kind === "full";
@@ -548,6 +550,7 @@ export class UiHelpers {
 					resolveWaitingPoll(renderToolName);
 
 					if (renderToolName === "read" && readArgsCollapseIntoGroup(content.arguments)) {
+						resetCompactToolGroup(toolGroup, true);
 						if (hasErrorStop && errorMessage) {
 							if (!readGroup) {
 								readGroup = new ReadToolGroupComponent({
@@ -743,6 +746,7 @@ export class UiHelpers {
 			} else {
 				readGroup?.seal();
 				readGroup = null;
+				resetCompactToolGroup(toolGroup, true);
 				// A user prompt closes the displacement window, same as the live path.
 				if (message.role === "user") resolveWaitingPoll();
 				if (message.role === "user") resolveTodoSnapshot();

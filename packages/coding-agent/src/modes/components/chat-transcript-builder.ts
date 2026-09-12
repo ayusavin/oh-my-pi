@@ -56,7 +56,7 @@ import { EvalExecutionComponent } from "./eval-execution";
 import { type LateDiagnosticsFile, LateDiagnosticsMessageComponent } from "./late-diagnostics-message";
 import { groupedReadUsageCallIds, ReadToolGroupComponent, readArgsCollapseIntoGroup } from "./read-tool-group";
 import { SkillMessageComponent } from "./skill-message";
-import { type CompactToolCallComponent, compactToolCallMode, type CompactToolGroupHolder, mountCompactToolCall } from "./tool-call-compact";
+import { type CompactToolCallComponent, compactToolCallMode, type CompactToolGroupHolder, mountCompactToolCall, resetCompactToolGroup } from "./tool-call-compact";
 import { ToolExecutionComponent } from "./tool-execution";
 import { TranscriptContainer } from "./transcript-container";
 import { createUsageRowBlock, turnElapsedMs } from "./usage-row";
@@ -155,6 +155,7 @@ export class ChatTranscriptBuilder {
 		this.#pendingTools.clear();
 		this.#readArgs.clear();
 		this.#readGroup = null;
+		this.#toolGroup = { current: undefined };
 		this.#pendingUsage = undefined;
 		this.#pendingUsageDuration = undefined;
 		this.#pendingUsageTtft = undefined;
@@ -248,6 +249,7 @@ export class ChatTranscriptBuilder {
 		if (!usageAttached) {
 			this.#readGroup?.seal();
 			this.#readGroup = null;
+			resetCompactToolGroup(this.#toolGroup, true);
 			this.container.addChild(
 				createUsageRowBlock(
 					this.#pendingUsage,
@@ -271,6 +273,7 @@ export class ChatTranscriptBuilder {
 		if (message.role !== "assistant" && message.role !== "toolResult") {
 			this.#readGroup?.seal();
 			this.#readGroup = null;
+			resetCompactToolGroup(this.#toolGroup, true);
 		}
 		switch (message.role) {
 			case "assistant":
@@ -407,6 +410,7 @@ export class ChatTranscriptBuilder {
 			// New visible turn content closes the current read run (mirrors rebuild).
 			this.#readGroup?.seal();
 			this.#readGroup = null;
+			resetCompactToolGroup(this.#toolGroup, true);
 		}
 
 		const errorPresentation = resolveAssistantErrorPresentation(message);
@@ -435,6 +439,7 @@ export class ChatTranscriptBuilder {
 
 			const afterToolSegment = timeline.afterToolCalls.get(content.id);
 			if (content.name === "read" && readArgsCollapseIntoGroup(content.arguments)) {
+				resetCompactToolGroup(this.#toolGroup, true);
 				if (hasErrorStop && errorMessage) {
 					const group = this.#ensureReadGroup();
 					group.updateArgs(content.arguments, content.id);
