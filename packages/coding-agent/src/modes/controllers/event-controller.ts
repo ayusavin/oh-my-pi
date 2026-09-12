@@ -105,6 +105,12 @@ export class EventController {
 	// emits one read per completion — does not break it, so a run of consecutive
 	// reads collapses into one group even across completion boundaries.
 	#lastVisibleBlockCount = 0;
+	// Screen-visible counterpart of `#lastVisibleBlockCount`, for the compact
+	// tool-group reset only: thinking counts here only while it is actually
+	// displayed, so a hidden-by-default thinking block between two tool calls
+	// never breaks `2 shell commands` into loose rows. `#resetReadGroup()`
+	// keeps using the upstream count above, unchanged.
+	#lastScreenVisibleBlockCount = 0;
 	#renderedCustomMessages = new Set<string>();
 	#lastIntent: string | undefined = undefined;
 	#backgroundTaskCallIds = new Set<string>();
@@ -742,6 +748,7 @@ export class EventController {
 		this.#resetReadGroup();
 		this.#resetToolGroup();
 		this.#lastVisibleBlockCount = 0;
+		this.#lastScreenVisibleBlockCount = 0;
 		this.#renderedCustomMessages.clear();
 		this.#lastIntent = undefined;
 		this.#toolTimelineComponents.clear();
@@ -1014,6 +1021,7 @@ export class EventController {
 			}
 			this.#finalizeAbandonedPostToolSegments();
 			this.#lastVisibleBlockCount = 0;
+			this.#lastScreenVisibleBlockCount = 0;
 			this.#streamedToolCallIdByIndex.clear();
 			this.ctx.streamingComponent = createAssistantMessageComponent(this.ctx);
 			this.ctx.streamingMessage = event.message;
@@ -1221,15 +1229,30 @@ export class EventController {
 			const timeline = splitAssistantMessageToolTimeline(this.ctx.streamingMessage);
 			this.#streamingReveal.setTarget(timeline.beforeTools, timeline.hasToolCalls);
 
-			const visibleBlockCount = this.ctx.streamingMessage.content.filter(
-				content =>
+			const hideThinking = this.ctx.effectiveHideThinkingBlock;
+			let visibleBlockCount = 0;
+			let screenVisibleBlockCount = 0;
+			for (const content of this.ctx.streamingMessage.content) {
+				const visible =
 					(content.type === "text" && canonicalizeMessage(content.text)) ||
-					(content.type === "thinking" && canonicalizeMessage(content.thinking)),
-			).length;
+					(content.type === "thinking" && canonicalizeMessage(content.thinking));
+				if (!visible) continue;
+				visibleBlockCount++;
+				if (content.type === "text" || !hideThinking) screenVisibleBlockCount++;
+			}
 			if (visibleBlockCount > this.#lastVisibleBlockCount) {
 				this.#resetReadGroup();
-				this.#resetToolGroup();
 				this.#lastVisibleBlockCount = visibleBlockCount;
+			}
+			// The compact tool group closes on content the user can actually see:
+			// text always, thinking only while it is displayed. The model emits a
+			// thinking block between practically every pair of tool calls, so
+			// counting it unconditionally (`visibleBlockCount` above, upstream's
+			// own signal for `#resetReadGroup()`) breaks the group on content
+			// hidden by default, splitting `2 shell commands` into loose rows.
+			if (screenVisibleBlockCount > this.#lastScreenVisibleBlockCount) {
+				this.#resetToolGroup();
+				this.#lastScreenVisibleBlockCount = screenVisibleBlockCount;
 			}
 
 			// Content blocks stream sequentially: a toolCall block can only begin

@@ -31,11 +31,190 @@ import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { buildAsyncResultBlock } from "@oh-my-pi/pi-coding-agent/modes/utils/transcript-render-helpers";
 import type { AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { CustomMessage } from "@oh-my-pi/pi-coding-agent/session/messages";
-import { Container } from "@oh-my-pi/pi-tui";
 import { createInteractiveModeContext } from "../../helpers/interactive-mode-context";
+import { Container, parseSgrMouse } from "@oh-my-pi/pi-tui";
+const ESC = String.fromCharCode(27);
 
 beforeAll(async () => {
 	await initTheme(false, undefined, undefined, "dark", "light");
+});
+
+describe("CompactToolCallComponent", () => {
+	it("renders `Tool(primary argument)` with no status word or byte count", () => {
+		const component = new CompactToolCallComponent();
+		component.addCall("call-1", "bash", "Bash", { command: "ls -la" }, undefined);
+		component.setExecutionStarted("call-1");
+		component.updateResult({ content: [{ type: "text", text: "a.txt\nb.txt\n" }], isError: false }, false, "call-1");
+		const text = plain(component.render(120));
+		expect(text).toContain("Bash(ls -la)");
+		expect(text).not.toContain("ok");
+		expect(text).not.toContain("B)");
+	});
+});
+
+describe("CompactToolCallComponent click-to-expand (C7)", () => {
+	beforeAll(() => {
+		initTheme();
+	});
+
+	it("a left click on a settled single row toggles it; the sibling stays collapsed", () => {
+		const first = new CompactToolCallComponent();
+		first.addCall("call-1", "bash", "Bash", { command: "echo one" }, undefined);
+		first.updateResult(
+			{ content: [{ type: "text", text: "out one\nmore\nlines" }], isError: false },
+			false,
+			"call-1",
+		);
+		const second = new CompactToolCallComponent();
+		second.addCall("call-2", "bash", "Bash", { command: "echo two" }, undefined);
+		second.updateResult({ content: [{ type: "text", text: "out two" }], isError: false }, false, "call-2");
+
+		const collapsed = plain(first.render(120));
+		expect(collapsed.split("\n")).toHaveLength(1);
+		expect(first.getViewportClickAction()).toBeDefined();
+
+		first.getViewportClickAction()!();
+		const expanded = plain(first.render(120));
+		expect(expanded.split("\n").length).toBeGreaterThan(1);
+		expect(expanded).toContain("out one");
+		expect(expanded).toContain("more");
+
+		// The sibling is untouched: its rows never changed, and its own toggle
+		// acts on it alone — revealing its result, not the first row's.
+		expect(plain(second.render(120)).split("\n")).toHaveLength(1);
+		expect(second.getViewportClickAction()).toBeDefined();
+		second.getViewportClickAction()!();
+		const siblingExpanded = plain(second.render(120));
+		expect(siblingExpanded.split("\n")).toHaveLength(2);
+		expect(siblingExpanded).toContain("out two");
+		expect(siblingExpanded).not.toContain("out one");
+
+		// A second click collapses the first row back.
+		first.getViewportClickAction()!();
+		expect(plain(first.render(120)).split("\n")).toHaveLength(1);
+	});
+
+	it("a grouped row expands to one line per call and a second click collapses it", () => {
+		const component = new CompactToolCallComponent();
+		component.addCall("call-1", "bash", "Bash", { command: "echo first" }, undefined);
+		component.addCall("call-2", "bash", "Bash", { command: "echo second" }, undefined);
+		const collapsed = plain(component.render(120));
+		expect(collapsed.split("\n")).toHaveLength(1);
+		expect(collapsed).toContain("2 shell commands");
+
+		component.getViewportClickAction()!();
+		const expanded = plain(component.render(120));
+		expect(expanded.split("\n")).toHaveLength(2);
+		expect(expanded).toContain("echo first");
+		expect(expanded).toContain("echo second");
+
+		component.getViewportClickAction()!();
+		expect(plain(component.render(120))).toBe(collapsed);
+	});
+
+	it("a wheel report is not a left click and toggles nothing", () => {
+		const component = new CompactToolCallComponent();
+		component.addCall("call-1", "bash", "Bash", { command: "echo hi" }, undefined);
+		component.updateResult({ content: [{ type: "text", text: "out" }], isError: false }, false, "call-1");
+		const before = plain(component.render(120));
+
+		const event = parseSgrMouse(`${ESC}[<65;5;1M`);
+		expect(event).not.toBeNull();
+		expect(event!.leftClick).toBe(false);
+		expect(event!.wheel).toBe(1);
+		// No toggle method fires without a real left click routed to the row.
+		expect(plain(component.render(120))).toBe(before);
+	});
+
+	it("ctrl+o keeps driving the session-wide flag alongside per-row state", () => {
+		const component = new CompactToolCallComponent();
+		component.addCall("call-1", "bash", "Bash", { command: "echo first" }, undefined);
+		component.addCall("call-2", "bash", "Bash", { command: "echo second" }, undefined);
+
+		// ctrl+o expands every row session-wide…
+		component.setExpanded(true);
+		expect(plain(component.render(120)).split("\n")).toHaveLength(2);
+		component.setExpanded(false);
+		expect(plain(component.render(120)).split("\n")).toHaveLength(1);
+
+		// …while a click override on this row stays independent of it.
+		component.getViewportClickAction()!();
+		expect(plain(component.render(120)).split("\n")).toHaveLength(2);
+		component.setExpanded(false);
+		expect(plain(component.render(120)).split("\n")).toHaveLength(2);
+		component.getViewportClickAction()!();
+		expect(plain(component.render(120)).split("\n")).toHaveLength(1);
+		// With the override cleared and the baseline false, the row is collapsed again.
+		component.setExpanded(false);
+		expect(plain(component.render(120)).split("\n")).toHaveLength(1);
+	});
+
+	it("a row with nothing more to show is not clickable", () => {
+		const pending = new CompactToolCallComponent();
+		pending.addCall("call-1", "bash", "Bash", { command: "echo running" }, undefined);
+		expect(pending.getViewportClickAction()).toBeUndefined();
+		expect(pending.getClickFocusAgentIds()).toEqual([]);
+
+		const settled = new CompactToolCallComponent();
+		settled.addCall("call-1", "bash", "Bash", { command: "echo done" }, undefined);
+		settled.updateResult({ content: [{ type: "text", text: "ok" }], isError: false }, false, "call-1");
+		expect(settled.getViewportClickAction()).toBeDefined();
+	});
+});
+
+describe("CompactToolCallComponent ask resultSummary (B)", () => {
+	beforeAll(() => {
+		initTheme();
+	});
+
+	it("the ask row shows the question before resolution and the chosen answer after", () => {
+		const component = new CompactToolCallComponent();
+		component.addCall("call-1", "ask", "Ask", { questions: [{ id: "q1", question: "Use plan mode?", options: ["Plan", "No"], multi: false }] }, undefined);
+		const pending = plain(component.render(120));
+		expect(pending).toContain("Ask(Use plan mode?)");
+		expect(pending).not.toContain("Yes");
+
+		component.updateResult(
+			{
+				content: [{ type: "text", text: "User answers:\nq1: Plan" }],
+				details: { results: [{ id: "q1", question: "Use plan mode?", options: ["Plan", "No"], multi: false, selectedOptions: ["Plan"] }] },
+				isError: false,
+			},
+			false,
+			"call-1",
+		);
+		const settled = plain(component.render(120));
+		expect(settled).toContain("Ask(Use plan mode?)");
+		expect(settled).toContain("Plan");
+	});
+
+	it("a custom Other answer and a chat redirect render on the row", () => {
+		const custom = new CompactToolCallComponent();
+		custom.addCall("call-1", "ask", "Ask", { question: "Name the branch?" }, undefined);
+		custom.updateResult(
+			{
+				content: [{ type: "text", text: "User answers:\nq1: \"feat/x\"" }],
+				details: { question: "Name the branch?", customInput: "feat/x" },
+				isError: false,
+			},
+			false,
+			"call-1",
+		);
+		expect(plain(custom.render(120))).toContain("feat/x");
+
+		const redirect = new CompactToolCallComponent();
+		redirect.addCall("call-2", "ask", "Ask", { question: "Continue?" }, undefined);
+		redirect.updateResult(
+			{
+				content: [{ type: "text", text: "User chose to chat" }],
+				details: { chatRedirect: true, questions: ["Continue?"] },
+				isError: false,
+			},
+			false,
+			"call-2",
+		);
+		expect(plain(redirect.render(120))).toContain("chat redirect");
+	});
 });
 
 beforeEach(async () => {

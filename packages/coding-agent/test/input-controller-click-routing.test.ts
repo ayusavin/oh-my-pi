@@ -8,11 +8,15 @@ import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 
 const ESC = String.fromCharCode(27);
-// SGR click on viewport row 2 (1-based y=3): the pinned expander row when the
-// candidates below resolve it to the toggle sentinel.
+// SGR click on viewport row 1 (1-based y=2): the compact tool-row action
+// when the routing override below arms it. The row-2 expander sentinel
+// click (EXPANDER_CLICK) falls through to candidates-based focus routing.
+const TOOL_ROW_CLICK = `${ESC}[<0;5;2M`;
 const EXPANDER_CLICK = `${ESC}[<0;5;3M`;
 
-function makeHarness() {
+function makeHarness(overrides?: {
+	resolveViewportClickAction?: (index: number) => ((local: number) => void) | undefined;
+}) {
 	const listeners: Array<(data: string) => { consume?: boolean; data?: string } | undefined> = [];
 	const focused: string[] = [];
 	let toggled = 0;
@@ -39,6 +43,7 @@ function makeHarness() {
 			extensionRunner: undefined,
 		},
 		resolveViewportClickCandidates: (index: number) => (index === 2 ? [PINNED_HUD_TOGGLE_ID] : []),
+		resolveViewportClickAction: overrides?.resolveViewportClickAction ?? (() => undefined),
 		focusedAgentId: undefined,
 		focusAgentSession: async (id: string) => {
 			focused.push(id);
@@ -52,8 +57,9 @@ function makeHarness() {
 	const controller = new InputController(ctx);
 	controller.setupKeyHandlers();
 	return {
-		click: () => {
-			for (const listener of listeners) listener(EXPANDER_CLICK);
+		listeners,
+		click: (data: string = EXPANDER_CLICK) => {
+			for (const listener of listeners) listener(data);
 		},
 		focused,
 		toggled: () => toggled,
@@ -90,6 +96,47 @@ describe("InputController click routing", () => {
 		const h = makeHarness();
 		h.click();
 		expect(h.toggled()).toBe(1);
+		expect(h.focused).toEqual([]);
+	});
+
+	it("routes a click to the viewport row's action before subagent focus", () => {
+		let actionToggled = 0;
+		const h = makeHarness({
+			resolveViewportClickAction: (index: number) =>
+				index === 1
+					? (local: number) => {
+							actionToggled += 100 + local;
+						}
+					: undefined,
+		});
+		h.click(TOOL_ROW_CLICK);
+		// The tool-row action at viewport row 1 wins over the row-2 sentinel
+		// candidates: the expander is never consulted.
+		expect(actionToggled).toBe(101);
+	});
+
+	it("ignores wheel and pointer motion reports entirely", () => {
+		const h = makeHarness();
+		for (const data of [`${ESC}[<64;5;3M`, `${ESC}[<65;5;3M`, `${ESC}[<32;5;3M`]) {
+			for (const listener of h.listeners) listener(data);
+		}
+		expect(h.toggled()).toBe(0);
+		expect(h.focused).toEqual([]);
+	});
+
+	it("consumes nothing when inline tracking is off", () => {
+		settings.set("tui.mouse", false);
+		let actionToggled = 0;
+		const h = makeHarness({
+			resolveViewportClickAction: (index: number) =>
+				index === 1
+					? (local: number) => {
+							actionToggled += 100 + local;
+						}
+					: undefined,
+		});
+		h.click();
+		expect(actionToggled).toBe(0);
 		expect(h.focused).toEqual([]);
 	});
 });

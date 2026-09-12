@@ -155,6 +155,10 @@ export interface InteractiveModeContext {
 	invalidatePendingFocus(): void;
 	/** Candidate subagent ids under a mutable-viewport line, for click-to-focus. Empty when the line has no target. */
 	resolveViewportClickCandidates(index: number): string[];
+	/** Click action under a mutable-viewport line, when the hit span owns one
+	 * (e.g. a compact tool row's own expand/collapse). Tried before
+	 * `resolveViewportClickCandidates`-based focus routing. */
+	resolveViewportClickAction(index: number): ((local: number) => void) | undefined;
 	/** Flip the pinned jump list between its collapsed few and the full list. */
 	togglePinnedHudExpanded(): void;
 	/** Rebuild the pinned jump list for a `display.pinnedAgents` change. */

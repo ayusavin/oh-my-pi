@@ -25,7 +25,7 @@ import type { Component } from "@oh-my-pi/pi-tui";
 import { Container, Text } from "@oh-my-pi/pi-tui";
 import { formatDuration } from "@oh-my-pi/pi-utils";
 import { theme } from "../../modes/theme/theme";
-import { TRUNCATE_LENGTHS, type ToolUIStatus } from "../../tools/render-utils";
+import { PREVIEW_LIMITS, TRUNCATE_LENGTHS, type ToolUIStatus } from "../../tools/render-utils";
 import { type ToolActivitySummary, toolRenderers } from "../../tools/renderers";
 import { Ellipsis, renderStatusLine, truncateToWidth } from "../../tui";
 import type { ToolExecutionHandle } from "./tool-execution";
@@ -41,8 +41,14 @@ interface CompactCallEntry {
 	tool: AgentTool | undefined;
 	args: unknown;
 	outcome: CallOutcome;
-	/** First line of a failed call's result text (C3's "first error line"). */
-	errorText?: string;
+	/** Full joined text of the settled result — `firstErrorLine` reads its
+	 * first line for a failed call's row (C3), and the click-expand reveal
+	 * (C7) shows the rest when there is more than the collapsed line. */
+	resultText?: string;
+	/** One-line answer summary from the tool's `resultSummary` hook (e.g.
+	 * ask's chosen option, B) — the renderer's own resolved data, never
+	 * derived from `resultText`. */
+	resultSummary?: string;
 	durationMs?: number;
 	startedAtNow?: number;
 }
@@ -124,7 +130,8 @@ function firstErrorLine(text: string | undefined): string | undefined {
  * (C3) — the icon alone carries success/failure/pending. A duration shows
  * only while the call is still running, or once settled for a subagent
  * (`task`) completion where the run really took measurable time; a failure
- * instead shows its first error line.
+ * instead shows its first error line, and a settled call with a
+ * `resultSummary` hook (ask's chosen answer, B) shows that instead.
  */
 function renderCallLine(entry: CompactCallEntry): string {
 	const status: ToolUIStatus = entry.outcome === "pending" ? "pending" : entry.outcome === "error" ? "error" : "done";
@@ -135,12 +142,30 @@ function renderCallLine(entry: CompactCallEntry): string {
 			meta.push(formatDuration(Math.round(performance.now() - entry.startedAtNow)));
 		}
 	} else if (entry.outcome === "error") {
-		const line = firstErrorLine(entry.errorText);
+		const line = firstErrorLine(entry.resultText);
 		if (line) meta.push(line);
-	} else if (SUBAGENT_TOOL_NAMES[entry.toolName] && entry.durationMs !== undefined) {
-		meta.push(formatDuration(Math.round(entry.durationMs)));
+	} else {
+		if (SUBAGENT_TOOL_NAMES[entry.toolName] && entry.durationMs !== undefined) {
+			meta.push(formatDuration(Math.round(entry.durationMs)));
+		}
+		if (entry.resultSummary) {
+			meta.push(truncateToWidth(entry.resultSummary.replace(/\s+/g, " ").trim(), TRUNCATE_LENGTHS.LINE, Ellipsis.Unicode));
+		}
 	}
 	return ` ${renderStatusLine({ icon: status, title, titleColor: "toolTitle", meta }, theme)}`;
+}
+
+/**
+ * Click-expand reveal (C7) for a settled single-call row: the result text
+ * beyond the collapsed line, bounded the way the full card's own output
+ * preview is (`PREVIEW_LIMITS.OUTPUT_EXPANDED`) rather than dumped whole.
+ */
+function renderRevealLines(entry: CompactCallEntry): string[] {
+	const lines = (entry.resultText ?? "").split("\n");
+	const budget = PREVIEW_LIMITS.OUTPUT_EXPANDED;
+	const shown = lines.slice(0, budget).map(line => `   ${theme.fg("toolOutput", line)}`);
+	if (lines.length > budget) shown.push(`   ${theme.fg("dim", `… +${lines.length - budget} lines`)}`);
+	return shown;
 }
 
 interface GroupNoun {
@@ -192,6 +217,10 @@ function renderGroupLine(entries: readonly CompactCallEntry[]): string {
 	return ` ${renderStatusLine({ icon: status, title, titleColor: "toolTitle" }, theme)}`;
 }
 
+/** Per-instance click-candidate id counter (C7 hover banding) — monotonic,
+ * process-lifetime unique so a retired row's id can never alias a live one. */
+let nextToolRowClickId = 1;
+
 /**
  * Compact (`display.toolCalls: "compact"`) and grouped (`"grouped"`) tool-call
  * row: one line per call, or — once a second call joins the same group — one
@@ -200,14 +229,23 @@ function renderGroupLine(entries: readonly CompactCallEntry[]): string {
  * `ToolExecutionHandle`, mirroring `ReadToolGroupComponent`'s shape,
  * including its `finalize()`/`seal()` pair: `finalize()` closes the group to
  * new entries without forcing a still-pending one done; `seal()` forces it
- * done regardless (turn end, abandonment). `setExpanded` is the same toggle
- * a future click handler can call (C7) — ctrl+o already drives it via
- * `setExpanded`, unchanged.
+ * done regardless (turn end, abandonment). `setExpanded` drives the
+ * session-wide `ctrl+o` baseline unchanged; `toggleExpanded` (C7) flips one
+ * row's own click override independently of it — see both methods below.
  */
 export class CompactToolCallComponent extends Container implements ToolExecutionHandle {
 	#entries = new Map<string, CompactCallEntry>();
 	#text: Text;
 	#expanded = false;
+	/** Per-row click override (C7), independent of `#expanded` (the
+	 * session-wide `ctrl+o` flag `setExpanded` tracks): `undefined` follows
+	 * `#expanded`; a boolean here wins until the next click on this row. */
+	#rowExpanded: boolean | undefined;
+	/** Per-instance click-candidate id for hover banding — never a real
+	 * agent id (the `@…:…` charset cannot collide with one; same precedent
+	 * as `PINNED_HUD_TOGGLE_ID`). `getViewportClickAction` resolves before
+	 * any registry lookup would see it. */
+	#clickId = `@omp:tool-row:${nextToolRowClickId++}`;
 	#toolActivityVisible = true;
 	// Closed to new entries. Distinct from `#sealed`: a `finalize()`d group
 	// with a still-pending entry (e.g. a background task the turn ended
@@ -262,12 +300,12 @@ export class CompactToolCallComponent extends Container implements ToolExecution
 		const entry = this.#entries.get(toolCallId);
 		if (!entry) return;
 		entry.outcome = result.isError ? "error" : "success";
-		entry.errorText = result.isError
-			? result.content
-					?.filter(block => block.type === "text")
-					.map(block => block.text ?? "")
-					.join("\n")
-			: undefined;
+		entry.resultText = result.content
+			?.filter(block => block.type === "text")
+			.map(block => block.text ?? "")
+			.join("\n");
+		const summary = result.isError ? undefined : toolRenderers[entry.toolName]?.resultSummary?.(result);
+		entry.resultSummary = summary?.detail ?? summary?.label;
 		entry.durationMs = entry.startedAtNow !== undefined ? performance.now() - entry.startedAtNow : undefined;
 		this.#blockVersion++;
 		this.#updateDisplay();
@@ -286,9 +324,43 @@ export class CompactToolCallComponent extends Container implements ToolExecution
 		this.#updateDisplay();
 	}
 
+	/**
+	 * Click-to-expand (C7): flips this row's own expansion, independent of
+	 * the session-wide flag `setExpanded` tracks (`ctrl+o`) — clicking one
+	 * row never expands its siblings, and a later `ctrl+o` still drives every
+	 * untouched row's baseline exactly as before.
+	 */
+	toggleExpanded(): void {
+		const effective = this.#entries.size > 1 ? (this.#rowExpanded ?? this.#expanded) : this.#rowExpanded === true;
+		this.#rowExpanded = !effective;
+		this.#blockVersion++;
+		this.#updateDisplay();
+	}
+
 	setToolActivityVisible(visible: boolean): void {
 		this.#toolActivityVisible = visible;
 		super.invalidate();
+	}
+
+	/** C7's clickability predicate: a grouped row always has its per-call
+	 * lines behind the collapsed summary; a single-call row is clickable only
+	 * once it has settled with more to show than its own line. */
+	#clickable(): boolean {
+		if (this.#entries.size > 1) return true;
+		const [entry] = this.#entries.values();
+		return (entry?.resultText ?? "").trim().length > 0;
+	}
+
+	/** Click-candidate id for hover banding (C7) — empty when the row has
+	 * nothing more to show, so it never bands or routes a click. */
+	getClickFocusAgentIds(): string[] {
+		return this.#clickable() ? [this.#clickId] : [];
+	}
+
+	/** Click action (C7): toggle this row's own expansion. `undefined` when
+	 * the row is not clickable. */
+	getViewportClickAction(): (() => void) | undefined {
+		return this.#clickable() ? () => this.toggleExpanded() : undefined;
 	}
 
 	override render(width: number): readonly string[] {
@@ -328,7 +400,15 @@ export class CompactToolCallComponent extends Container implements ToolExecution
 
 	#updateDisplay(): void {
 		const entries = [...this.#entries.values()];
-		const lines = entries.length <= 1 || this.#expanded ? entries.map(renderCallLine) : [renderGroupLine(entries)];
+		if (entries.length > 1) {
+			const expanded = this.#rowExpanded ?? this.#expanded;
+			const lines = expanded ? entries.map(renderCallLine) : [renderGroupLine(entries)];
+			this.#text.setText(lines.join("\n"));
+			return;
+		}
+		const entry = entries[0];
+		const lines = entry ? [renderCallLine(entry)] : [];
+		if (entry && this.#rowExpanded === true) lines.push(...renderRevealLines(entry));
 		this.#text.setText(lines.join("\n"));
 	}
 }
