@@ -151,6 +151,16 @@ export interface InteractiveModeContext {
 	focusParentSession(): Promise<void>;
 	/** Return the view to the main session (delegates to SessionFocusController.unfocus). */
 	unfocusSession(): Promise<void>;
+	/** Drop pending focus requests without changing the view (delegates to SessionFocusController.invalidatePendingFocus). */
+	invalidatePendingFocus(): void;
+	/** Candidate subagent ids under a mutable-viewport line, for click-to-focus. Empty when the line has no target. */
+	resolveViewportClickCandidates(index: number): string[];
+	/** Flip the pinned jump list between its collapsed few and the full list. */
+	togglePinnedHudExpanded(): void;
+	/** Rebuild the pinned jump list for a `display.pinnedAgents` change. */
+	applyPinnedAgentsSetting(): void;
+	/** Point the inline hover band at a click-candidate id (or clear it). */
+	setClickHoverId(id: string | undefined): void;
 	/** Clear loader, transient HUD/pending containers, streaming state, and pending tools. */
 	clearTransientSessionUi(): void;
 	settings: Settings;
@@ -379,6 +389,11 @@ export interface InteractiveModeContext {
 	/** Refresh the running-subagents status badge from the active local or collab registry. */
 	syncRunningSubagentBadge(): void;
 	updateEditorBorderColor(): void;
+	/**
+	 * Re-apply `tui.vimMode` to the live editor and refresh the mode chrome (border, status-line
+	 * segment, cursor shape). Lets the setting take effect without restarting the session.
+	 */
+	applyVimModeSetting(): void;
 	rebuildChatFromMessages(options?: { reuseSettledComponents?: boolean }): void;
 	setTodos(todos: TodoItem[] | TodoPhase[]): void;
 	reloadTodos(source?: AgentSession): Promise<void>;
