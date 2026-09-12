@@ -39,6 +39,7 @@ import {
 	formatParseErrorsCountLabel,
 	PREVIEW_LIMITS,
 } from "./render-utils";
+import type { ToolActivitySummary } from "./renderers";
 import { PREVIEW_PENDING_NOTICE, queueResolveHandler } from "./resolve";
 import { ToolError } from "./tool-errors";
 import { toolResult } from "./tool-result";
@@ -591,8 +592,16 @@ function patternPreview(pat: string | undefined): string | undefined {
 	return collapsed || undefined;
 }
 
+/** Compact one-line activity: the target paths, joined — never the raw
+ * `paths` array (C1, C6). Mirrors `renderCall`'s own `in <paths>` meta. */
+function astEditActivitySummary(args: unknown): ToolActivitySummary {
+	const astArgs = (args ?? {}) as AstEditRenderArgs;
+	return astArgs.paths?.length ? { label: "AST Edit", detail: astArgs.paths.join(", ") } : { label: "AST Edit" };
+}
+
 export const astEditToolRenderer = {
 	inline: true,
+	activitySummary: astEditActivitySummary,
 	renderCall(args: AstEditRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {
 		const meta: string[] = [];
 		if (args.paths?.length) meta.push(`in ${args.paths.join(", ")}`);

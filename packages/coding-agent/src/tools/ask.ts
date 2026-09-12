@@ -46,6 +46,7 @@ import {
 	sanitizeCarriageReturns,
 	TRUNCATE_LENGTHS,
 } from "./render-utils";
+import type { ToolActivitySummary } from "./renderers";
 import { ToolAbortError } from "./tool-errors";
 
 // =============================================================================
@@ -1467,6 +1468,15 @@ function renderAnswerOptionLines(
 
 export const askToolRenderer = {
 	mergeCallAndResult: true,
+	/** Compact one-line activity: the question itself when there is exactly
+	 * one, a count naming what is being asked when there are several — never
+	 * the raw `questions` array (C1, C6). */
+	activitySummary(args: unknown): ToolActivitySummary {
+		const questions = normalizeRenderQuestions((args as AskRenderArgs | undefined)?.questions);
+		if (!questions || questions.length === 0) return { label: "Ask" };
+		if (questions.length === 1) return { label: "Ask", detail: questions[0]!.question };
+		return { label: "Ask", detail: `${questions.length} questions` };
+	},
 	renderCall(args: AskRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {
 		const label = formatTitle("Ask", uiTheme);
 		const mdTheme = getMarkdownTheme();

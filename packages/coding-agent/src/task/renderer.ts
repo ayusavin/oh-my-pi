@@ -5,9 +5,10 @@
  * tools/renderers.ts. This module has no side effects and can be safely
  * imported without triggering the subprocessToolRegistry registration.
  */
-import { renderCall, renderResult } from "./render";
+import { activitySummary, renderCall, renderResult } from "./render";
 
 export const taskToolRenderer = {
+	activitySummary,
 	renderCall,
 	renderResult,
 	mergeCallAndResult: true,

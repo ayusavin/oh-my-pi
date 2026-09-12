@@ -15,7 +15,7 @@ import {
 	readArgsHaveTarget,
 } from "../../modes/components/read-tool-group";
 import { TodoReminderComponent } from "../../modes/components/todo-reminder";
-import { compactToolCallMode, type CompactToolGroupHolder, mountCompactToolCall } from "../../modes/components/tool-call-compact";
+import { compactToolCallMode, type CompactToolGroupHolder, mountCompactToolCall, resetCompactToolGroup } from "../../modes/components/tool-call-compact";
 import {
 	ToolExecutionComponent,
 	type ToolExecutionHandle,
@@ -361,6 +361,13 @@ export class EventController {
 	#resetReadGroup(): void {
 		this.#lastReadGroup?.finalize();
 		this.#lastReadGroup = undefined;
+	}
+	/** Mirrors {@link #resetReadGroup}: closes the held `display.toolCalls:
+	 * "grouped"` group so a user message, visible assistant prose, or a turn
+	 * boundary breaks a run the same way it breaks a read run — while an
+	 * invisible per-message placeholder does not (Defect 1). */
+	#resetToolGroup(): void {
+		resetCompactToolGroup(this.#toolGroup, false);
 	}
 	/** Freeze foreground tool cards once no live agent turn can complete them. */
 	#sealAbandonedForegroundTools(): void {
@@ -733,6 +740,7 @@ export class EventController {
 		}
 		this.#pendingMessageUpdate = undefined;
 		this.#resetReadGroup();
+		this.#resetToolGroup();
 		this.#lastVisibleBlockCount = 0;
 		this.#renderedCustomMessages.clear();
 		this.#lastIntent = undefined;
@@ -897,6 +905,7 @@ export class EventController {
 			}
 			this.#renderedCustomMessages.add(signature);
 			this.#resetReadGroup();
+			this.#resetToolGroup();
 			// A directly-invoked `/skill:` or writable-collab custom prompt is the
 			// run's initiating message (user attribution): seed the prompt→yield
 			// delta from it, the same as a user message.
@@ -940,6 +949,7 @@ export class EventController {
 			const signature = `${textContent}\u0000${imageCount}`;
 
 			this.#resetReadGroup();
+			this.#resetToolGroup();
 			this.#resolveDisplaceablePoll();
 			this.#resolveDisplaceableTodo();
 			const wasOptimistic = this.ctx.optimisticUserMessageSignature === signature;
@@ -986,6 +996,7 @@ export class EventController {
 			}
 		} else if (event.message.role === "fileMention") {
 			this.#resetReadGroup();
+			this.#resetToolGroup();
 			this.ctx.addMessageToChat(event.message);
 			this.ctx.ui.requestRender();
 		} else if (event.message.role === "assistant") {
@@ -1217,6 +1228,7 @@ export class EventController {
 			).length;
 			if (visibleBlockCount > this.#lastVisibleBlockCount) {
 				this.#resetReadGroup();
+				this.#resetToolGroup();
 				this.#lastVisibleBlockCount = visibleBlockCount;
 			}
 
@@ -1258,7 +1270,10 @@ export class EventController {
 						continue;
 					}
 					if (readArgsCollapseIntoGroup(content.arguments)) {
-						if (!this.ctx.pendingTools.has(content.id)) this.#resolveDisplaceablePoll(renderToolName);
+						if (!this.ctx.pendingTools.has(content.id)) {
+							this.#resolveDisplaceablePoll(renderToolName);
+							this.#resetToolGroup();
+						}
 						this.#trackReadToolCall(content.id, content.arguments);
 						const component = this.ctx.pendingTools.get(content.id);
 						if (component) {
@@ -1510,6 +1525,7 @@ export class EventController {
 						false);
 				if (!usageAttached) {
 					this.#resetReadGroup();
+					this.#resetToolGroup();
 					this.ctx.chatContainer.addChild(
 						createUsageRowBlock(
 							event.message.usage,
@@ -1568,6 +1584,7 @@ export class EventController {
 				}
 			}
 			if (renderToolName === "read" && readArgsCollapseIntoGroup(event.args)) {
+				this.#resetToolGroup();
 				this.#trackReadToolCall(event.toolCallId, event.args);
 				const component = this.ctx.pendingTools.get(event.toolCallId);
 				if (component) {
@@ -1989,6 +2006,7 @@ export class EventController {
 		this.#orphanedToolCompletions.clear();
 		this.#postToolAssistantComponents.clear();
 		this.#resetReadGroup();
+		this.#resetToolGroup();
 		// The turn is over: nothing else lands this turn, so the waiting poll is
 		// final history — seal it instead of letting its spinner tick while idle.
 		this.#resolveDisplaceablePoll();
