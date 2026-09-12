@@ -1,0 +1,9 @@
+{
+  "upstreamRepo": "https://github.com/can1357/oh-my-pi.git",
+  "upstreamTag": "v18.1.18",
+  "upstreamCommit": "00085d4e7dfdcfbf302c122fa2682b410a0f43d1",
+  "mergedAt": "2026-09-12",
+  "patches": [
+    "feat(retry): accept role aliases in fallback chain entries"
+  ]
+}
