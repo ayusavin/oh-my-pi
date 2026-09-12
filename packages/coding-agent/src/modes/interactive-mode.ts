@@ -965,6 +965,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.composer.viewportClickCandidates(index);
 	}
 
+	resolveViewportClickAction(index: number): ((local: number) => void) | undefined {
+		return this.composer.viewportClickAction(index);
+	}
+
 	/** Flip the pinned jump list between its collapsed few and the full list, overriding the setting. */
 	togglePinnedHudExpanded(): void {
 		const mode = settings.get("display.pinnedAgents");

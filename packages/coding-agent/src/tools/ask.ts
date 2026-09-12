@@ -739,6 +739,21 @@ function formatQuestionResult(result: QuestionResult): string {
 	return result.multi ? `${result.id}: []${noteSuffix}` : `${result.id}: (cancelled)${noteSuffix}`;
 }
 
+/**
+ * The chosen answer's text for a compact-row summary (B): the custom input,
+ * else the selected label(s), else nothing to report. Mirrors
+ * `formatQuestionResult`'s precedence without its model-facing id/bracket
+ * formatting — this is a UI string, not a tool-result reply line.
+ */
+function askAnswerText(answer: { customInput?: string; selectedOptions?: string[]; timedOut?: boolean }): string | undefined {
+	if (answer.customInput !== undefined) return answer.customInput;
+	if (answer.selectedOptions && answer.selectedOptions.length > 0) {
+		const joined = answer.selectedOptions.join(", ");
+		return answer.timedOut ? `${joined} (auto-selected)` : joined;
+	}
+	return undefined;
+}
+
 function formatSingleQuestionResponse(result: {
 	selectedOptions: string[];
 	customInput?: string;
@@ -1476,6 +1491,24 @@ export const askToolRenderer = {
 		if (!questions || questions.length === 0) return { label: "Ask" };
 		if (questions.length === 1) return { label: "Ask", detail: questions[0]!.question };
 		return { label: "Ask", detail: `${questions.length} questions` };
+	},
+	/**
+	 * The row's post-resolution answer (B, C4): the same sanitized `details`
+	 * `renderResult` below draws in the full card, reduced to one line —
+	 * never re-derived from the model-facing `content` text. `undefined`
+	 * before the question resolves (no `details` yet) or when there is
+	 * nothing to summarize.
+	 */
+	resultSummary(result: { details?: AskToolDetails }): ToolActivitySummary | undefined {
+		if (!result.details) return undefined;
+		const details = sanitizeAskResultDetails(result.details);
+		if (details.chatRedirect) return { label: "chat redirect" };
+		if (details.results && details.results.length > 0) {
+			const answers = details.results.map(askAnswerText).filter((text): text is string => text !== undefined);
+			return answers.length > 0 ? { label: answers.join(", ") } : undefined;
+		}
+		const text = askAnswerText(details);
+		return text !== undefined ? { label: text } : undefined;
 	},
 	renderCall(args: AskRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {
 		const label = formatTitle("Ask", uiTheme);

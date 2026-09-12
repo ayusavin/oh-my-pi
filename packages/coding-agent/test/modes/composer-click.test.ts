@@ -4,7 +4,7 @@ import { TranscriptContainer } from "../../src/modes/components/transcript-conta
 import { initTheme } from "../../src/modes/theme/theme";
 import { Container, type Component } from "@oh-my-pi/pi-tui";
 import { VirtualTerminal } from "../../../tui/test/virtual-terminal";
-import { routeViewportClick, type ViewportClickSpan } from "../../src/modes/composer";
+import { routeViewportClick, routeViewportClickAction, type ViewportClickSpan } from "../../src/modes/composer";
 
 function span(start: number, end: number, ids: string[]): ViewportClickSpan {
 	return { start, end, candidates: () => ids };
@@ -40,6 +40,40 @@ describe("routeViewportClick", () => {
 	it("lets the first overlapping span win", () => {
 		const spans = [span(0, 5, ["A"]), span(2, 4, ["B"])];
 		expect(routeViewportClick(spans, 3)).toEqual(["A"]);
+	});
+});
+
+describe("routeViewportClickAction", () => {
+	it("returns the hit span's action, mirroring routeViewportClick's span lookup", () => {
+		let hitLocal = -1;
+		const spans: ViewportClickSpan[] = [
+			{
+				start: 0,
+				end: 2,
+				candidates: () => [],
+				action: local => {
+					hitLocal = local;
+				},
+			},
+			{ start: 3, end: 5, candidates: () => ["B"] },
+		];
+		expect(routeViewportClickAction(spans, 1)).toBe(spans[0]!.action);
+		spans[0]!.action!(1);
+		expect(hitLocal).toBe(1);
+		// A span without an action yields undefined, not the next span's.
+		expect(routeViewportClickAction(spans, 4)).toBeUndefined();
+	});
+
+	it("misses separators, out-of-range rows, and non-integer indexes", () => {
+		const action = (local: number) => void local;
+		const spans: ViewportClickSpan[] = [
+			{ start: 0, end: 2, candidates: () => [], action },
+			{ start: 3, end: 4, candidates: () => [] },
+		];
+		expect(routeViewportClickAction(spans, 2)).toBeUndefined();
+		expect(routeViewportClickAction(spans, -1)).toBeUndefined();
+		expect(routeViewportClickAction(spans, Number.NaN)).toBeUndefined();
+		expect(routeViewportClickAction(spans, 99)).toBeUndefined();
 	});
 });
 

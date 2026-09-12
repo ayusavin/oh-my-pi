@@ -673,7 +673,7 @@ export class InputController {
 		const event = parseSgrMouse(data);
 		if (!event) return undefined;
 		if (event.motion) this.#updateHoverHighlight(event.row);
-		else if (event.leftClick) this.#focusClickedAgent(event.row);
+		else if (event.leftClick) this.#handleViewportClick(event.row);
 		return { consume: true };
 	}
 
@@ -690,14 +690,34 @@ export class InputController {
 		this.ctx.ui.requestRender();
 	}
 
-	// Candidates under a screen row, or none when the published viewport is
-	// empty (resize transactions) or the row falls outside it: routing stale
-	// spans would highlight or focus an unrelated agent from old rows.
-	#viewportCandidates(screenRow: number): string[] {
+	// Local row under a screen row, or undefined when the published viewport
+	// is empty (resize transactions) or the row falls outside it: routing
+	// stale spans would highlight, click, or focus something from old rows.
+	#viewportLocalRow(screenRow: number): number | undefined {
 		const viewport = this.ctx.ui.getMutableViewport();
 		const local = screenRow - viewport.top;
-		if (viewport.length === 0 || local < 0 || local >= viewport.length) return [];
-		return this.ctx.resolveViewportClickCandidates(local);
+		return viewport.length === 0 || local < 0 || local >= viewport.length ? undefined : local;
+	}
+
+	#viewportCandidates(screenRow: number): string[] {
+		const local = this.#viewportLocalRow(screenRow);
+		return local === undefined ? [] : this.ctx.resolveViewportClickCandidates(local);
+	}
+
+	/**
+	 * Route a left click: a viewport row's own click action (e.g. a compact
+	 * tool row's expand/collapse, C7) wins over subagent-focus routing, so a
+	 * non-agent click target never falls through to "That subagent is gone".
+	 */
+	#handleViewportClick(screenRow: number): void {
+		const local = this.#viewportLocalRow(screenRow);
+		const action = local === undefined ? undefined : this.ctx.resolveViewportClickAction(local);
+		if (action === undefined || local === undefined) {
+			this.#focusClickedAgent(screenRow);
+			return;
+		}
+		action(local);
+		this.ctx.ui.requestRender();
 	}
 
 	/**

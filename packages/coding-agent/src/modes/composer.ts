@@ -139,6 +139,11 @@ export interface ViewportClickSpan {
 	end: number;
 	/** Candidate subagent ids for a span-local row. */
 	candidates: (local: number) => string[];
+	/** Click action for a span-local row, when the span owns one (e.g. a
+	 * compact tool row's own expand/collapse). Takes precedence over
+	 * `candidates`-based focus routing so a non-agent click target never
+	 * falls through to subagent-focus resolution. */
+	action?: (local: number) => void;
 }
 
 /**
@@ -161,6 +166,23 @@ export function routeViewportClick(spans: readonly ViewportClickSpan[], index: n
 		return span.candidates(index - span.start);
 	}
 	return [];
+}
+
+/**
+ * Click action under a mutable-viewport line: the first span containing it
+ * that carries one. Pure seam for tests, mirroring {@link routeViewportClick};
+ * callers try this before falling back to candidate-based focus routing.
+ */
+export function routeViewportClickAction(
+	spans: readonly ViewportClickSpan[],
+	index: number,
+): ((local: number) => void) | undefined {
+	if (!Number.isInteger(index) || index < 0) return undefined;
+	for (const span of spans) {
+		if (index < span.start || index >= span.end) continue;
+		return span.action;
+	}
+	return undefined;
 }
 
 /**
@@ -384,9 +406,14 @@ export class Composer implements TerminalFrameProvider {
 		const active = transcript.renderViewport(width, Math.max(0, rows - before.length - after.length), frame);
 		const activeSpans: ViewportClickSpan[] = [];
 		for (const span of transcript.getLastViewportSpans()) {
-			const ids = (span.component as Partial<{ getClickFocusAgentIds(): string[] }>).getClickFocusAgentIds?.();
-			if (!ids || ids.length === 0) continue;
-			activeSpans.push({ start: span.start, end: span.end, candidates: () => ids });
+			const target = span.component as Partial<{
+				getClickFocusAgentIds(): string[];
+				getViewportClickAction(): (() => void) | undefined;
+			}>;
+			const ids = target.getClickFocusAgentIds?.();
+			const action = target.getViewportClickAction?.();
+			if ((!ids || ids.length === 0) && action === undefined) continue;
+			activeSpans.push({ start: span.start, end: span.end, candidates: () => ids ?? [], action });
 		}
 		const drop = Math.max(0, before.length + active.length + after.length - rows);
 		const mutable = [...before, ...active, ...after].slice(drop);
@@ -446,6 +473,15 @@ export class Composer implements TerminalFrameProvider {
 	 */
 	viewportClickCandidates(index: number): string[] {
 		return routeViewportClick(this.#lastClickSpans, index);
+	}
+
+	/**
+	 * Click action under a mutable-viewport line, when the hit span owns one
+	 * (e.g. a compact tool row's own expand/collapse) — tried before
+	 * candidate-based focus routing.
+	 */
+	viewportClickAction(index: number): ((local: number) => void) | undefined {
+		return routeViewportClickAction(this.#lastClickSpans, index);
 	}
 
 	/**

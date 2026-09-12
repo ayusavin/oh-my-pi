@@ -65,6 +65,17 @@ export type ToolRenderer = {
 	mergeCallAndResult?: boolean;
 	/** Describes current activity without coupling a renderer to terminal layout. */
 	activitySummary?: (args: unknown, context: ToolActivityContext) => ToolActivitySummary;
+	/**
+	 * Summarizes a settled result to one line for the transcript's generic
+	 * compact card (`tool-call-compact.ts`) — the result-side counterpart of
+	 * `activitySummary`, which sees call arguments only and cannot see a
+	 * resolved answer (e.g. ask's chosen option).
+	 */
+	resultSummary?: (result: {
+		content: Array<{ type: string; text?: string }>;
+		details?: unknown;
+		isError?: boolean;
+	}) => ToolActivitySummary | undefined;
 	/** Render without background box, inline in the response flow */
 	inline?: boolean;
 	/**
