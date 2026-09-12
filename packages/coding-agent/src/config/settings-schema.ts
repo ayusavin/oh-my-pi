@@ -1355,6 +1355,19 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"display.toolCalls": {
+		type: "enum",
+		values: ["full", "compact", "grouped"] as const,
+		default: "full",
+		ui: {
+			tab: "appearance",
+			group: "Display",
+			label: "Tool Call Display",
+			description:
+				"How tool calls render in the transcript: full keeps today's card; compact shows one line per call; grouped also folds consecutive same-turn calls into one expandable row",
+		},
+	},
+
 	"display.showTokenUsage": {
 		type: "boolean",
 		default: false,
