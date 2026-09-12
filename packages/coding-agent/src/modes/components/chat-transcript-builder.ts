@@ -56,6 +56,7 @@ import { EvalExecutionComponent } from "./eval-execution";
 import { type LateDiagnosticsFile, LateDiagnosticsMessageComponent } from "./late-diagnostics-message";
 import { groupedReadUsageCallIds, ReadToolGroupComponent, readArgsCollapseIntoGroup } from "./read-tool-group";
 import { SkillMessageComponent } from "./skill-message";
+import { type CompactToolCallComponent, type CompactToolGroupHolder, mountCompactToolCall } from "./tool-call-compact";
 import { ToolExecutionComponent } from "./tool-execution";
 import { TranscriptContainer } from "./transcript-container";
 import { createUsageRowBlock, turnElapsedMs } from "./usage-row";
@@ -86,9 +87,10 @@ function userMessageText(message: Extract<AgentMessage, { role: "user" }>): stri
 
 export class ChatTranscriptBuilder {
 	readonly container = new TranscriptContainer();
-	#pendingTools = new Map<string, ToolExecutionComponent | ReadToolGroupComponent>();
+	#pendingTools = new Map<string, ToolExecutionComponent | ReadToolGroupComponent | CompactToolCallComponent>();
 	#readArgs = new Map<string, Record<string, unknown>>();
 	#readGroup: ReadToolGroupComponent | null = null;
+	#toolGroup: CompactToolGroupHolder = { current: undefined };
 	#pendingUsage: Usage | undefined;
 	#pendingUsageDuration: number | undefined;
 	#pendingUsageTtft: number | undefined;
@@ -455,6 +457,15 @@ export class ChatTranscriptBuilder {
 
 			this.#readGroup?.seal();
 			this.#readGroup = null;
+
+			const toolCallDisplay = settings.get("display.toolCalls");
+			if (toolCallDisplay !== "full") {
+				const { group, pending } = mountCompactToolCall(this.container, this.#toolGroup, toolCallDisplay, this.#expanded, content.id, content.name, content.arguments, this.deps.getTool?.(content.name), hasErrorStop && errorMessage ? errorMessage : undefined);
+				this.#trackExpandable(group);
+				if (pending) this.#pendingTools.set(content.id, group);
+				appendAssistantSegment(afterToolSegment);
+				continue;
+			}
 			const component = new ToolExecutionComponent(
 				content.name,
 				content.arguments,

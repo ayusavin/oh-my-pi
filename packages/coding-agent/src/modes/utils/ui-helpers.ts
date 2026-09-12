@@ -32,6 +32,7 @@ import {
 import { SkillMessageComponent } from "../../modes/components/skill-message";
 import { StrippedToolCallsPlaceholder } from "../../modes/components/stripped-tool-calls-placeholder";
 import { ToolActivityContainer } from "../../modes/components/tool-activity";
+import { type CompactToolGroupHolder, mountCompactToolCall } from "../../modes/components/tool-call-compact";
 import {
 	ToolExecutionComponent,
 	type ToolExecutionHandle,
@@ -387,6 +388,7 @@ export class UiHelpers {
 		}
 
 		let readGroup: ReadToolGroupComponent | null = null;
+		const toolGroup: CompactToolGroupHolder = { current: undefined };
 		const readToolCallArgs = new Map<string, Record<string, unknown>>();
 		const readToolCallAssistantComponents = new Map<string, AssistantMessageComponent>();
 		// Defer per-turn metrics until the turn's tool results have materialized.
@@ -596,6 +598,14 @@ export class UiHelpers {
 								streamingStringKeys: streamingStringKeysForTool(renderToolName, rawInput),
 							})
 						: content.arguments;
+
+					const toolCallDisplay = this.ctx.settings.get("display.toolCalls");
+					if (toolCallDisplay !== "full") {
+						const { group, pending } = mountCompactToolCall(this.ctx.chatContainer, toolGroup, toolCallDisplay, this.ctx.toolOutputExpanded, content.id, renderToolName, renderArgs, tool, hasErrorStop && errorMessage ? errorMessage : undefined);
+						if (pending) this.ctx.pendingTools.set(content.id, group);
+						appendAssistantSegment(afterToolSegment);
+						continue;
+					}
 					const component = new ToolExecutionComponent(
 						renderToolName,
 						renderArgs,
