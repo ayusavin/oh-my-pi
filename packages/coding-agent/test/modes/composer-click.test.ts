@@ -5,6 +5,10 @@ import { initTheme } from "../../src/modes/theme/theme";
 import { Container, type Component } from "@oh-my-pi/pi-tui";
 import { VirtualTerminal } from "../../../tui/test/virtual-terminal";
 import { routeViewportClick, routeViewportClickAction, type ViewportClickSpan } from "../../src/modes/composer";
+import {
+	type CompactToolGroupHolder,
+	mountCompactToolCall,
+} from "../../src/modes/components/tool-call-compact";
 
 function span(start: number, end: number, ids: string[]): ViewportClickSpan {
 	return { start, end, candidates: () => ids };
@@ -249,6 +253,53 @@ describe("composer chrome span recording", () => {
 			expect(hudRow).toBeGreaterThanOrEqual(0);
 			expect(composer.viewportClickCandidates(hudRow)).toEqual(["AgentH"]);
 			expect(first.renders).toBe(1);
+		} finally {
+			composer.stop();
+		}
+	});
+});
+
+describe("composer click-to-toggle through a real renderFrame", () => {
+	beforeAll(() => {
+		initTheme();
+	});
+
+	// Regression: `renderFrame`'s `shift()` used to rebuild every clipped/
+	// repositioned span without copying its `action` — every click-to-toggle
+	// row (a compact tool group, a settled single-call row) silently lost its
+	// action once `renderFrame` ran, even though `getViewportClickAction()`
+	// itself was correct. `viewportClickAction` only ever reads `#lastClickSpans`,
+	// which `renderFrame` always rebuilds through `shift()` — so this exercises
+	// the real production `renderFrame` pass, not a hand-built span.
+	it("a rendered CompactToolCallComponent group's click action survives renderFrame's clipping and toggles the row", () => {
+		const term = new VirtualTerminal(80, 24);
+		const composer = new Composer({ terminal: term, preferences: { ...COMPOSER_DEFAULTS, quiet: true } });
+		composer.start();
+		try {
+			const transcript = new TranscriptContainer();
+			const holder: CompactToolGroupHolder = { current: undefined };
+			mountCompactToolCall(transcript, holder, "grouped", false, "call-1", "bash", { command: "echo one" }, undefined);
+			mountCompactToolCall(transcript, holder, "grouped", false, "call-2", "bash", { command: "echo two" }, undefined);
+			composer.setRuntimeChildren([transcript]);
+
+			const frame = composer.renderFrame({ columns: 80, rows: 24 });
+			const groupRow = frame.viewport.findIndex(line => line.includes("shell command"));
+			expect(groupRow).toBeGreaterThanOrEqual(0);
+			expect(Bun.stripANSI(frame.viewport[groupRow]!)).toContain("2 shell commands");
+
+			const action = composer.viewportClickAction(groupRow);
+			expect(action).toBeDefined();
+			action!(groupRow);
+
+			const expanded = Bun.stripANSI(composer.renderFrame({ columns: 80, rows: 24 }).viewport.join("\n"));
+			expect(expanded).toContain("echo one");
+			expect(expanded).toContain("echo two");
+
+			// A second click collapses it back (C7).
+			composer.viewportClickAction(groupRow)!(groupRow);
+			const collapsed = Bun.stripANSI(composer.renderFrame({ columns: 80, rows: 24 }).viewport.join("\n"));
+			expect(collapsed).toContain("2 shell commands");
+			expect(collapsed).not.toContain("echo one");
 		} finally {
 			composer.stop();
 		}
