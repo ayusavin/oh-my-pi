@@ -425,9 +425,18 @@ export class Composer implements TerminalFrameProvider {
 			const clamped = Math.max(0, start);
 			if (end > clamped) {
 				// A clipped head must offset the callback: without the skew the
-				// first visible row would hit-test as span-local row 0.
+				// first visible row would hit-test as span-local row 0. The
+				// action needs the same skew — dropping it here silently
+				// disarmed every click-to-toggle row once the viewport clipped
+				// or repositioned it (before.length/drop shift every frame).
 				const skew = clamped - start;
-				spans.push({ start: clamped, end, candidates: (local: number) => span.candidates(local + skew) });
+				const action = span.action;
+				spans.push({
+					start: clamped,
+					end,
+					candidates: (local: number) => span.candidates(local + skew),
+					action: action ? (local: number) => action(local + skew) : undefined,
+				});
 			}
 		};
 		for (const span of activeSpans) shift(span, before.length - drop);

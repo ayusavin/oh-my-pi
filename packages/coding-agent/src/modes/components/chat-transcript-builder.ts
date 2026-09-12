@@ -438,7 +438,11 @@ export class ChatTranscriptBuilder {
 			this.#resolveWaitingPoll(content.name);
 
 			const afterToolSegment = timeline.afterToolCalls.get(content.id);
-			if (content.name === "read" && readArgsCollapseIntoGroup(content.arguments)) {
+			const toolCallDisplay = compactToolCallMode(settings.get("display.toolCalls"));
+			// `display.toolCalls: compact`/`grouped` folds a collapsible read into
+			// the same compact group as any other call; `ReadToolGroupComponent`
+			// stays the `full`-mode path only.
+			if (content.name === "read" && readArgsCollapseIntoGroup(content.arguments) && !toolCallDisplay) {
 				resetCompactToolGroup(this.#toolGroup, true);
 				if (hasErrorStop && errorMessage) {
 					const group = this.#ensureReadGroup();
@@ -463,7 +467,6 @@ export class ChatTranscriptBuilder {
 			this.#readGroup?.seal();
 			this.#readGroup = null;
 
-			const toolCallDisplay = compactToolCallMode(settings.get("display.toolCalls"));
 			if (toolCallDisplay) {
 				const { group, pending } = mountCompactToolCall(this.container, this.#toolGroup, toolCallDisplay, this.#expanded, content.id, content.name, content.arguments, this.deps.getTool?.(content.name), hasErrorStop && errorMessage ? errorMessage : undefined);
 				this.#trackExpandable(group);

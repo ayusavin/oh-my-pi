@@ -548,8 +548,12 @@ export class UiHelpers {
 					const tool = this.ctx.viewSession.getToolByName(content.name);
 					const renderToolName = toolRenderName(content.name, tool);
 					resolveWaitingPoll(renderToolName);
+					const toolCallDisplay = compactToolCallMode(this.ctx.settings.get("display.toolCalls"));
 
-					if (renderToolName === "read" && readArgsCollapseIntoGroup(content.arguments)) {
+					// `display.toolCalls: compact`/`grouped` folds a collapsible read into
+					// the same compact group as any other call; `ReadToolGroupComponent`
+					// stays the `full`-mode path only.
+					if (renderToolName === "read" && readArgsCollapseIntoGroup(content.arguments) && !toolCallDisplay) {
 						resetCompactToolGroup(toolGroup, true);
 						if (hasErrorStop && errorMessage) {
 							if (!readGroup) {
@@ -606,7 +610,6 @@ export class UiHelpers {
 							})
 						: content.arguments;
 
-					const toolCallDisplay = compactToolCallMode(this.ctx.settings.get("display.toolCalls"));
 					if (toolCallDisplay) {
 						const { group, pending } = mountCompactToolCall(this.ctx.chatContainer, toolGroup, toolCallDisplay, this.ctx.toolOutputExpanded, content.id, renderToolName, renderArgs, tool, hasErrorStop && errorMessage ? errorMessage : undefined);
 						if (pending) this.ctx.pendingTools.set(content.id, group);

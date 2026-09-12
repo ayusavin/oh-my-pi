@@ -11,8 +11,9 @@
  * never a status word or byte count. `grouped` additionally folds a run of
  * consecutive calls — merging across message boundaries as long as nothing
  * visible interrupts them — into one row naming the work, expandable
- * (ctrl+o) to one line per call — mirroring `ReadToolGroupComponent`, which
- * keeps owning collapsible `read` calls regardless of `display.toolCalls`.
+ * (ctrl+o) to one line per call. A collapsible `read` call joins that same
+ * group like any other call once `display.toolCalls` is `compact`/`grouped`;
+ * `ReadToolGroupComponent` keeps owning it only in `full` mode.
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
@@ -432,24 +433,53 @@ describe("display.toolCalls", () => {
 		expect(compactGroups(chatContainer)).toHaveLength(2);
 	});
 
-	it("grouped leaves collapsible read calls on ReadToolGroupComponent", async () => {
+	it("grouped joins a collapsible read call into the compact group like any other call", async () => {
 		settings.set("display.toolCalls", "grouped");
 		const { controller, chatContainer } = createFixture();
 		await streamCompletion(controller, [toolCall("read", "read-1", { path: "/tmp/example.ts" })]);
 
 		const readGroups = chatContainer.children.filter(child => child instanceof ReadToolGroupComponent);
-		expect(readGroups).toHaveLength(1);
-		expect(compactGroups(chatContainer)).toHaveLength(0);
+		expect(readGroups).toHaveLength(0);
+		const groups = compactGroups(chatContainer);
+		expect(groups).toHaveLength(1);
+		expect(groups[0]!.size).toBe(1);
 	});
 
-	it("grouped does not reuse a stale group across an interleaved read call", async () => {
+	it("grouped keeps a read call in the same group as surrounding bash calls", async () => {
 		settings.set("display.toolCalls", "grouped");
 		const { controller, chatContainer } = createFixture();
 		await streamCompletion(controller, [toolCall("bash", "call-1", { command: "echo one" })]);
 		await streamCompletion(controller, [toolCall("read", "read-1", { path: "/tmp/example.ts" })]);
 		await streamCompletion(controller, [toolCall("bash", "call-2", { command: "echo two" })]);
 
-		expect(compactGroups(chatContainer)).toHaveLength(2);
+		const groups = compactGroups(chatContainer);
+		expect(groups).toHaveLength(1);
+		expect(groups[0]!.size).toBe(3);
+	});
+
+	it("grouped names bash, read, eval, and grep in one mixed run, with no Called-once fallback for a built-in (C5)", async () => {
+		settings.set("display.toolCalls", "grouped");
+		const { controller, chatContainer } = createFixture();
+		await streamCompletion(controller, [
+			toolCall("bash", "call-1", { command: "echo one" }),
+			toolCall("bash", "call-2", { command: "echo two" }),
+			toolCall("read", "read-1", { path: "/tmp/example.ts" }),
+			toolCall("eval", "eval-1", { language: "js", code: "1+1" }),
+			toolCall("grep", "grep-1", { pattern: "needle", path: "/tmp/hay" }),
+		]);
+
+		const readGroups = chatContainer.children.filter(child => child instanceof ReadToolGroupComponent);
+		expect(readGroups).toHaveLength(0);
+		const groups = compactGroups(chatContainer);
+		expect(groups).toHaveLength(1);
+		expect(groups[0]!.size).toBe(5);
+
+		const text = plain(groups[0]!.render(120));
+		expect(text).toContain("2 shell commands");
+		expect(text).toContain("1 file read");
+		expect(text).toContain("1 eval");
+		expect(text).toContain("1 search");
+		expect(text).not.toMatch(/Called \w+ once/);
 	});
 
 	it("a waiting poll (hub wait) renders a human name, not a bare internal id (C6)", async () => {
