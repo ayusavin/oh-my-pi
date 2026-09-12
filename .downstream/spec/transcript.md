@@ -126,6 +126,90 @@ is partial (row 9, corrected from a flat gap):
   `test/modes/controllers/event-controller-tool-call-display.test.ts` (12 tests) and by the setting
   reading `full` out of the box and `grouped` after a write through this repository's own CLI.
 
+## Compact rendering contract
+
+Requirements 1, 2 and 4 say a call renders as one collapsed line, a result as one collapsed line, and a
+run of calls as one group with a count. They do not say what those lines read like. The first
+implementation of `display.toolCalls` satisfied them literally and still failed in use: rows read
+`Bash command="timeout 25 ssh -o ConnectTimeout=10 -o BatchMode…" error · 887B · 25.1s`,
+`Hub op="wait", ids=[1 items], timeoutMs=180000 ok · 857B · 1m53s` and `2 tool calls ok · 6.4KB · 797ms`
+— an argument dump, an internal id and a count that names nothing. This section is the contract those
+rows must satisfy, drawn from what Claude Code actually prints (evidence below, gathered 2026-09-12).
+
+**C1. A row is the tool's name and its primary argument, in parentheses.** `Bash(timeout 25 ssh …)`,
+not `Bash command="timeout 25 ssh …"`. No `key=value` serialization of the argument object ever reaches
+a row. Each tool declares which single argument is primary; a tool with none renders its name alone.
+
+**C2. The prose sentence above the run is where the human explanation lives, not the row.** Claude Code
+carries no per-call description field on an ordinary row; its rows echo the argument, and the sentence
+that says why comes from the model's own narration above them. omp already produces that sentence
+(`tools.intentTracing`), so a row never needs to compete with it, and the compact renderer must not eat
+it (requirement 3).
+
+**C3. A row carries no status word and no byte count.** Success is the row's own glyph; a failure shows
+its first error line on the result row. Size is counted in whatever unit the tool's own result is
+counted in — lines for a read, a write or an edit — never bytes. A duration appears only while the call
+is still running, or on a subagent's completion row where the run really took measurable time.
+
+**C4. A result is one indented line under its call**, carrying the outcome and a truncation hint when
+there is more (`… +18 lines`), and that hint is the affordance to expand.
+
+**C5. A group row names what happened, never how many calls there were.** `3 shell commands`,
+`Read 4 files`, `2 agents finished` — a verb, a count and an object. `2 tool calls` is forbidden by this
+contract: it is exactly the row the developer could not read. A group whose calls span more than one
+tool names the tools, not the total.
+
+**C6. An internal identifier never stands alone on a row.** A background job, a waiting poll, a
+subagent: each renders with the human name of the work it carries, with the internal id available only
+in the expanded form. `Background job completed [bash] bg_10` fails this; the same row naming the
+command or the job's own label passes.
+
+**C7. A row that has more to show is clickable.** Clicking a collapsed row expands it and clicking
+again collapses it, while the keyboard expansion (`ctrl+o`) keeps working unchanged. A row with nothing
+more to show is not clickable, and text selection must survive (`tui.mouse` puts native selection on
+shift+drag).
+
+**C8. Truncation is bounded and never mid-escape.** A primary argument is cut to a fixed budget with a
+single ellipsis; the cut must not split an escape sequence or a multi-byte character.
+
+### Evidence for this contract
+
+- Row shape and argument echo, Claude Code 2.1.150, full captured session:
+  `● Bash(mkdir /users/user1/claude-demo)` / `⎿  Done`; `● Write(count.py)` / `⎿  Wrote 2 lines to count.py`;
+  `● Read(my_file)` / `⎿  Read 31 lines (ctrl+o to expand)`; `⏺ Update(assets/js/utils/security.js)` /
+  `⎿  Updated … with 9 additions and 9 removals` — https://jhpce.jhu.edu/sw/claude-example/ (read
+  2026-09-12). Truncation hint and error form: `⎿  Error: …` plus `… +44 lines (ctrl+r to see all)` —
+  https://github.com/anthropics/claude-code/issues/8214 (2025-09-26).
+- Only the subagent row carries a prose description (`Task(Analyze security warnings)` /
+  `⎿  Done (10 tool uses · 37.1k tokens · 1m 33.7s)`), and only it carries counts and a duration — same
+  captured session.
+- No documented per-call description on a Bash row: `tools-reference` documents `timeout` and
+  `run_in_background` only (https://code.claude.com/docs/en/tools-reference, read 2026-09-12), and the
+  changelog entry that improved "the Bash tool's description guidance so Claude describes what a command
+  does in plain words instead of echoing the command" is about the model's prose, not a row field
+  (https://code.claude.com/docs/en/changelog). The narration requirement itself — "Before your first
+  tool call, state in one sentence what you're about to do" — is quoted from the system prompt in
+  https://github.com/anthropics/claude-code/issues/53239 (2026-04-25), whose whole complaint is that the
+  collapsed renderer dropped that sentence and left only `Ran 1 shell command`. That is the failure C2
+  exists to prevent.
+- Group rows name the work: `Read 1 file (ctrl+o to expand)`, `● Ran 3 stop hooks`,
+  `● 2 Explore agents finished (ctrl+o to expand)` with a `├─`/`└─` tree of named agents, and a
+  per-turn compound summary of the form "Edited 5 files +27 -23, … searched for 2 patterns, read 3
+  files, ran 12 bash commands" — https://code.claude.com/docs/en/interactive-mode and
+  https://github.com/anthropics/claude-code/issues/37123 (read 2026-09-12). Sources disagree on the MCP
+  form (`Called slack 3 times` in current docs versus `Queried {server} (ctrl+o to expand)` in the
+  v2.1.81 changelog); both name the server, neither names a call count alone.
+- Per-tool gerund labels exist in the shipped binary (Claude Code 2.1.258, Homebrew cask
+  `/opt/homebrew/Caskroom/claude-code@latest/2.1.258/claude`, read 2026-09-12): `getActivityDescription`
+  produces `Fetching <host>`, `Editing <path>`, `Writing <path>`, `Searching for <spec>`,
+  `Finding <spec>`, and for a subagent the model's own `description` normalized, else `Running task`.
+  The same binary carries the group-cap rows `[+N more tool calls]` (cap 6) and
+  `[N earlier steps omitted]`, a mobile row contract that "truncates around 30 characters", an output
+  preview of the last 10 lines at `columns - 6`, and the classic-TUI help line
+  "Click to expand collapsed tool results" — the direct precedent for C7. The Bash row's own template
+  and any `ctrl+o`/`ctrl+r` keybinding strings sit in compressed regions of that binary and were not
+  recoverable, so C1's Bash form rests on the captured sessions above, not on the bundle.
+
 ## Build notes, from the retired `tools/omp-local/` build
 
 The `harness` project once kept a separate local build of omp carrying these same patches, rebased onto

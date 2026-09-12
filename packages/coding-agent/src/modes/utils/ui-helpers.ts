@@ -237,9 +237,13 @@ export class UiHelpers {
 					}
 					if (message.customType === "advisor") {
 						const details = (message as CustomMessage<AdvisorMessageDetails>).details;
-						this.ctx.chatContainer.addChild(
-							createAdvisorMessageCard(details, () => this.ctx.toolOutputExpanded, theme),
+						const card = createAdvisorMessageCard(
+							details,
+							() => this.ctx.toolOutputExpanded,
+							theme,
+							this.ctx.settings.get("advisor.display"),
 						);
+						if (card) this.ctx.chatContainer.addChild(card);
 						break;
 					}
 					if (message.customType === BACKGROUND_TAN_DISPATCH_MESSAGE_TYPE) {
