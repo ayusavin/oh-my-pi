@@ -1292,6 +1292,154 @@ export function resolveConfiguredModelPatterns(
 		return resolved ?? [];
 	});
 }
+export interface ResolvedModelRoleAliasPattern {
+	selector: string;
+	/** Alias roles traversed before this target selector. */
+	rolePath?: string[];
+	/** An explicit suffix inherited from the alias that selected this pattern. */
+	thinkingLevel: ConfiguredThinkingLevel | undefined;
+}
+
+export type ModelRoleAliasIssue =
+	| { kind: "invalid"; selector: string }
+	| { kind: "unknown"; selector: string; role: string }
+	| { kind: "cycle"; roles: string[] }
+	| { kind: "unresolved"; role: string };
+
+/**
+ * Resolves a configured role alias without selecting a concrete model.
+ *
+ * The returned suffix is kept separate from the target selector so an outer
+ * alias suffix can override an inner alias or model suffix without corrupting
+ * literal model ids that contain `:max` or `:auto`.
+ */
+export interface ModelRoleAliasResolution {
+	roles: string[];
+	patterns: ResolvedModelRoleAliasPattern[];
+	issues: ModelRoleAliasIssue[];
+}
+
+const MAX_MODEL_ROLE_ALIAS_DEPTH = 32;
+
+export function resolveModelRoleAlias(value: string, settings?: ModelRoleLookup): ModelRoleAliasResolution | undefined {
+	const initial = value.trim();
+	if (!initial || modelRoleAliasPrefixLength(initial) === undefined) return undefined;
+
+	const roles: string[] = [];
+	const seenRoles = new Set<string>();
+	const patterns: ResolvedModelRoleAliasPattern[] = [];
+	const issues: ModelRoleAliasIssue[] = [];
+
+	function addRole(role: string): void {
+		if (seenRoles.has(role)) return;
+		seenRoles.add(role);
+		roles.push(role);
+	}
+
+	function resolvePattern(
+		pattern: string,
+		inheritedThinkingLevel: ConfiguredThinkingLevel | undefined,
+		visited: ReadonlySet<string>,
+		depth: number,
+		rolePath: readonly string[],
+	): void {
+		const normalized = pattern.trim();
+		if (!normalized) {
+			issues.push({ kind: "invalid", selector: pattern });
+			return;
+		}
+
+		const prefixLength = modelRoleAliasPrefixLength(normalized);
+		if (prefixLength === undefined) {
+			patterns.push({ selector: normalized, rolePath: [...rolePath], thinkingLevel: inheritedThinkingLevel });
+			return;
+		}
+
+		const { base: aliasCandidate, level: aliasThinkingLevel } = splitThinkingSuffix(
+			normalized,
+			prefixLength,
+			MAX_THINKING_SUFFIX_OPTIONS,
+		);
+		const role = getModelRoleAlias(aliasCandidate, settings);
+		if (!role) {
+			const candidate =
+				aliasCandidate === DEFAULT_MODEL_ROLE_ALIAS
+					? DEFAULT_MODEL_ROLE
+					: aliasCandidate.slice(prefixLength).trim();
+			issues.push(
+				candidate
+					? { kind: "unknown", selector: normalized, role: candidate }
+					: { kind: "invalid", selector: normalized },
+			);
+			return;
+		}
+
+		resolveRole(role, inheritedThinkingLevel ?? aliasThinkingLevel, visited, depth, rolePath);
+	}
+
+	function resolveRole(
+		role: string,
+		inheritedThinkingLevel: ConfiguredThinkingLevel | undefined,
+		visited: ReadonlySet<string>,
+		depth: number,
+		rolePath: readonly string[],
+	): void {
+		addRole(role);
+		if (visited.has(role) || depth >= MAX_MODEL_ROLE_ALIAS_DEPTH) {
+			issues.push({ kind: "cycle", roles: [...visited, role] });
+			return;
+		}
+
+		const nextVisited = new Set(visited);
+		nextVisited.add(role);
+		const nextRolePath = [...rolePath, role];
+		const configured = settings?.getModelRole(role)?.trim();
+		if (configured) {
+			for (const pattern of normalizeModelPatternList(configured)) {
+				resolvePattern(pattern, inheritedThinkingLevel, nextVisited, depth + 1, nextRolePath);
+			}
+			return;
+		}
+
+		if (!isModelRole(role)) {
+			issues.push({ kind: "unresolved", role });
+			return;
+		}
+
+		const configuredDefault = settings?.getModelRole(DEFAULT_MODEL_ROLE)?.trim();
+		if (shouldInheritDefaultBeforePriority(role) && configuredDefault) {
+			for (const pattern of normalizeModelPatternList(configuredDefault)) {
+				resolvePattern(pattern, inheritedThinkingLevel, nextVisited, depth + 1, nextRolePath);
+			}
+			return;
+		}
+
+		const configuredFallback = ROLE_CONFIGURED_FALLBACK[role];
+		if (configuredFallback) {
+			resolvePattern(
+				formatModelRoleAlias(configuredFallback),
+				inheritedThinkingLevel,
+				nextVisited,
+				depth + 1,
+				nextRolePath,
+			);
+			return;
+		}
+
+		const defaults = rolePriorityDefaults(role);
+		if (defaults.length === 0) {
+			issues.push({ kind: "unresolved", role });
+			return;
+		}
+		for (const pattern of defaults) {
+			patterns.push({ selector: pattern, rolePath: nextRolePath, thinkingLevel: inheritedThinkingLevel });
+		}
+	}
+
+	resolvePattern(initial, undefined, new Set(), 0, []);
+	return { roles, patterns, issues };
+}
+
 export interface AgentModelPatternResolutionOptions {
 	/** Highest-priority request selector, when supplied by a caller. */
 	requestModel?: string | string[];
@@ -1459,8 +1607,18 @@ export function resolveModelRoleValue(
 		return { model: undefined, thinkingLevel: undefined, explicitThinkingLevel: false, warning: undefined };
 	}
 
-	const effectivePatterns = resolveConfiguredModelPatterns(normalized, options?.roleLookup ?? options?.settings);
-	if (!effectivePatterns || effectivePatterns.length === 0) {
+	const roleLookup = options?.roleLookup ?? options?.settings;
+	const effectivePatterns = normalizeModelPatternList(normalized).flatMap(pattern => {
+		const aliasResolution = resolveModelRoleAlias(pattern, roleLookup);
+		if (aliasResolution && aliasResolution.issues.length === 0) {
+			return aliasResolution.patterns;
+		}
+		return resolveConfiguredModelPatterns(pattern, roleLookup).map(selector => ({
+			selector,
+			thinkingLevel: undefined as ConfiguredThinkingLevel | undefined,
+		}));
+	});
+	if (effectivePatterns.length === 0) {
 		return { model: undefined, thinkingLevel: undefined, explicitThinkingLevel: false, warning: undefined };
 	}
 
@@ -1471,17 +1629,19 @@ export function resolveModelRoleValue(
 	// rebuilding it per pattern inside parseModelPattern.
 	const preferenceContext = buildPreferenceContext(availableModels, matchPreferences);
 	for (const [patternIndex, effectivePattern] of effectivePatterns.entries()) {
-		const resolved = matchPatternWithContext(effectivePattern, availableModels, preferenceContext);
+		const resolved = matchPatternWithContext(effectivePattern.selector, availableModels, preferenceContext);
 		if (resolved.model) {
+			const thinkingLevel = effectivePattern.thinkingLevel ?? resolved.thinkingLevel;
+			const explicitThinkingLevel = effectivePattern.thinkingLevel !== undefined || resolved.explicitThinkingLevel;
 			return {
 				model: resolved.model,
 				matchedPatternIndex: patternIndex,
-				thinkingLevel: resolved.explicitThinkingLevel
-					? resolved.thinkingLevel === AUTO_THINKING
+				thinkingLevel: explicitThinkingLevel
+					? thinkingLevel === AUTO_THINKING
 						? AUTO_THINKING
-						: (resolveThinkingLevelForModel(resolved.model, resolved.thinkingLevel) ?? resolved.thinkingLevel)
-					: resolved.thinkingLevel,
-				explicitThinkingLevel: resolved.explicitThinkingLevel,
+						: (resolveThinkingLevelForModel(resolved.model, thinkingLevel) ?? thinkingLevel)
+					: thinkingLevel,
+				explicitThinkingLevel,
 				warning: resolved.warning,
 			};
 		}

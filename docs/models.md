@@ -447,6 +447,8 @@ Role aliases like `@smol` expand through `settings.modelRoles`; `*` selects `@de
 
 If a role points at another role, the target model still inherits normally and any explicit suffix on the referring role wins for that role-specific use.
 
+Retry fallback entries also accept quoted role aliases. Fallback resolution follows role assignments such as `default: "@claude-high"` when identifying a chain primary. Exact model keys and provider wildcards take precedence; otherwise a live role follows the nearest referenced role that owns a fallback chain.
+
 Related settings:
 
 - `modelRoles` (record)

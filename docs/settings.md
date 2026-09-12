@@ -457,6 +457,10 @@ retry:
     # Per-role chains override the default (roles from `modelRoles`,
     # including custom roles). Selectors accept an optional thinking
     # suffix, e.g. openai/gpt-5.5:low.
+    # Entries may also be quoted role aliases. They resolve against the
+    # current `modelRoles`; nested aliases work and the entry suffix wins:
+    # - "@claude-high"
+    # - "@gpt-high:high"
     smol:
       - openai/gpt-5.5-mini
       - anthropic/claude-haiku-4-5
@@ -493,6 +497,8 @@ providers:
 | `providers.openai-codex.codeModeDirectTools` | array   | `[]`              | Extra tool names to keep directly callable alongside `eval`/`ask`/`todo` when Codex Code Mode is active; entries that are not enabled in the session are ignored. |
 
 When the active model keeps failing (429s, quota walls, provider outages) and `retry.modelFallback` is on, the session picks the chain that owns the failing model, by specificity: an exact `provider/model-id` key, then a `provider/*` wildcard, then the current role's chain, then `default`. If several roles assign the same model, yaml key order does not decide: the live session role wins, and `default` wins over other matching roles when the session is not on those roles. It skips models whose selectors are still cooling down and switches for the rest of the turn. Subagents get their own per-spawn chains when their agent definition lists multiple model patterns — the first resolvable pattern is primary and the rest become its fallbacks; there is no `agent:<name>` key in `fallbackChains`.
+
+Fallback entries may use quoted `@role` aliases, including nested aliases. They resolve when a fallback is selected, so later `modelRoles` reassignment changes the candidate without rewriting `retry.fallbackChains`; an explicit suffix on the entry overrides a suffix from the referenced role. Unknown, malformed, and cyclic aliases are warned and skipped.
 
 ### Tools and approvals
 
