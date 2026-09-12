@@ -2414,13 +2414,15 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 						if (!resolved.configuredRole || !settings.get("retry.modelFallback")) {
 							return primaryPatterns;
 						}
+						const configuredFallbackChains = settings.get("retry.fallbackChains");
 						const fallbackContext: RetryFallbackResolutionContext = {
-							chains: expandDefaultRetryFallbackChains(settings.get("retry.fallbackChains"), [
+							chains: expandDefaultRetryFallbackChains(configuredFallbackChains, [
 								...Object.keys(settings.getModelRoles()),
 								resolved.configuredRole,
 							]),
 							getModelRole: role => settings.getModelRole(role),
 							modelLookup: modelRegistry,
+							isExplicitChain: chainKey => Array.isArray(configuredFallbackChains[chainKey]),
 						};
 						const originalSelector = resolved.configuredPatterns[0];
 						const availableOriginal = parseModelPattern(originalSelector, availableModels, matchPreferences);

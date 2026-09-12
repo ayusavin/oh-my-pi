@@ -6,6 +6,9 @@ import {
 	formatModelString,
 	formatModelStringWithRouting,
 	parseModelString,
+	resolveModelRoleAlias,
+	type ModelRoleAliasIssue,
+	type ResolvedModelRoleAliasPattern,
 } from "../config/model-resolver";
 import type { Settings } from "../config/settings";
 import { type ConfiguredThinkingLevel, concreteThinkingLevel } from "../thinking";
@@ -39,6 +42,8 @@ export interface RetryFallbackResolutionContext {
 	chains: RetryFallbackChains;
 	getModelRole(role: string): string | undefined;
 	modelLookup: RetryFallbackModelLookup;
+	/** Identifies configured chain keys before the default chain is expanded. */
+	isExplicitChain?(chainKey: string): boolean;
 }
 
 /** Active retry fallback state retained until the primary can be restored. */
@@ -100,6 +105,20 @@ export function parseRetryFallbackSelector(
 	};
 }
 
+/** Applies an alias-selected thinking suffix after parsing its target selector. */
+function parseRetryFallbackAliasSelector(
+	pattern: ResolvedModelRoleAliasPattern,
+	modelLookup: Pick<RetryFallbackModelLookup, "find">,
+): RetryFallbackSelector | undefined {
+	const parsed = parseRetryFallbackSelector(pattern.selector, modelLookup);
+	if (!parsed || pattern.thinkingLevel === undefined) return parsed;
+	return {
+		...parsed,
+		raw: formatModelSelectorValue(`${parsed.provider}/${parsed.id}`, pattern.thinkingLevel),
+		thinkingLevel: concreteThinkingLevel(pattern.thinkingLevel),
+	};
+}
+
 /** Whether a fallback-chain key is a model selector rather than a role. */
 export function isRetryFallbackModelKey(key: string): boolean {
 	return key.includes("/");
@@ -157,6 +176,57 @@ export function getRetryFallbackChains(settings: Settings): RetryFallbackChains 
 	return expandDefaultRetryFallbackChains(configuredChains, Object.keys(settings.getModelRoles()));
 }
 
+function reportRetryFallbackAliasIssues(
+	issues: ModelRoleAliasIssue[],
+	description: string,
+	report: (message: string) => void,
+): void {
+	for (const issue of issues) {
+		switch (issue.kind) {
+			case "invalid":
+				report(`${description} contains invalid role alias: ${issue.selector}`);
+				break;
+			case "unknown":
+				report(`${description} references unknown role alias: ${issue.selector}`);
+				break;
+			case "cycle":
+				report(`${description} references cyclic role alias: ${issue.roles.join(" -> ")}`);
+				break;
+			case "unresolved":
+				report(`${description} references unresolved role alias: @${issue.role}`);
+				break;
+		}
+	}
+}
+
+function validateRetryFallbackSelector(
+	selectorStr: string,
+	keyKind: "model" | "role",
+	key: string,
+	modelRegistry: ModelRegistry,
+	isDiscoveryPending: (provider: string) => boolean,
+	report: (message: string) => void,
+): void {
+	const description = `Fallback chain for ${keyKind} '${key}'`;
+	if (isRetryFallbackWildcardKey(selectorStr)) {
+		const { provider } = parseRetryFallbackWildcard(selectorStr, candidate =>
+			isKnownProvider(modelRegistry, candidate),
+		);
+		if (!isKnownProvider(modelRegistry, provider)) {
+			report(`${description} references unknown provider: ${selectorStr}`);
+		}
+		return;
+	}
+	const parsed = parseRetryFallbackSelector(selectorStr, modelRegistry);
+	if (!parsed) {
+		report(`Invalid fallback selector format in ${keyKind} '${key}': ${selectorStr}`);
+		return;
+	}
+	if (!modelRegistry.find(parsed.provider, parsed.id) && !isDiscoveryPending(parsed.provider)) {
+		report(`${description} references unknown model: ${selectorStr}`);
+	}
+}
+
 /**
  * Validates configured fallback chains and reports each warning via `warn`.
  *
@@ -205,6 +275,16 @@ export function validateRetryFallbackChains(
 				}
 			}
 		}
+		if (keyKind === "role") {
+			const primarySelector = settings.getModelRole(key);
+			const primaryAliases = primarySelector ? resolveModelRoleAlias(primarySelector, settings) : undefined;
+			if (primaryAliases) {
+				reportRetryFallbackAliasIssues(primaryAliases.issues, `Fallback primary for role '${key}'`, report);
+				for (const pattern of primaryAliases.patterns) {
+					validateRetryFallbackSelector(pattern.selector, keyKind, key, modelRegistry, isDiscoveryPending, report);
+				}
+			}
+		}
 		if (!Array.isArray(chain)) {
 			report(`Fallback chain for ${keyKind} '${key}' must be an array of selector strings.`);
 			continue;
@@ -214,23 +294,15 @@ export function validateRetryFallbackChains(
 				report(`Fallback chain for ${keyKind} '${key}' contains a non-string selector.`);
 				continue;
 			}
-			if (isRetryFallbackWildcardKey(selectorStr)) {
-				const { provider } = parseRetryFallbackWildcard(selectorStr, candidate =>
-					isKnownProvider(modelRegistry, candidate),
-				);
-				if (!isKnownProvider(modelRegistry, provider)) {
-					report(`Fallback chain for ${keyKind} '${key}' references unknown provider: ${selectorStr}`);
+			const aliases = resolveModelRoleAlias(selectorStr, settings);
+			if (aliases) {
+				reportRetryFallbackAliasIssues(aliases.issues, `Fallback chain for ${keyKind} '${key}'`, report);
+				for (const pattern of aliases.patterns) {
+					validateRetryFallbackSelector(pattern.selector, keyKind, key, modelRegistry, isDiscoveryPending, report);
 				}
 				continue;
 			}
-			const parsed = parseRetryFallbackSelector(selectorStr, modelRegistry);
-			if (!parsed) {
-				report(`Invalid fallback selector format in ${keyKind} '${key}': ${selectorStr}`);
-				continue;
-			}
-			if (!modelRegistry.find(parsed.provider, parsed.id) && !isDiscoveryPending(parsed.provider)) {
-				report(`Fallback chain for ${keyKind} '${key}' references unknown model: ${selectorStr}`);
-			}
+			validateRetryFallbackSelector(selectorStr, keyKind, key, modelRegistry, isDiscoveryPending, report);
 		}
 	}
 }
@@ -248,7 +320,7 @@ function getRetryFallbackPrimarySelector(
 	if (isRetryFallbackWildcardKey(chainKey)) return undefined;
 	if (isRetryFallbackModelKey(chainKey)) return parseRetryFallbackSelector(chainKey, context.modelLookup);
 	const configuredSelector = context.getModelRole(chainKey);
-	return configuredSelector ? parseRetryFallbackSelector(configuredSelector, context.modelLookup) : undefined;
+	return configuredSelector ? parseRetryFallbackChainEntry(context, configuredSelector, undefined)[0] : undefined;
 }
 
 function selectorMatchesCurrent(
@@ -264,10 +336,73 @@ function selectorMatchesCurrent(
 	return base === currentBaseSelector || (!!currentPlainBaseSelector && base === currentPlainBaseSelector);
 }
 
+/** Finds the nearest matching alias target that owns a fallback chain. */
+function resolveRetryFallbackAliasChainKey(
+	context: RetryFallbackResolutionContext,
+	roleHint: string,
+	currentSelector?: string,
+	currentBaseSelector?: string,
+	currentPlainSelector?: string,
+	currentPlainBaseSelector?: string,
+): string | undefined {
+	const configuredSelector = context.getModelRole(roleHint);
+	if (!configuredSelector) return undefined;
+	const aliases = resolveModelRoleAlias(configuredSelector, { getModelRole: context.getModelRole });
+	if (!aliases || aliases.issues.length > 0) return undefined;
+
+	for (const pattern of aliases.patterns) {
+		const parsed = parseRetryFallbackAliasSelector(pattern, context.modelLookup);
+		if (!parsed) continue;
+		if (
+			currentSelector &&
+			currentBaseSelector &&
+			!selectorMatchesCurrent(
+				parsed,
+				currentSelector,
+				currentBaseSelector,
+				currentPlainSelector,
+				currentPlainBaseSelector,
+			)
+		) {
+			continue;
+		}
+		const rolePath = pattern.rolePath ?? aliases.roles;
+		const explicitChain = rolePath.find(
+			role => Array.isArray(context.chains[role]) && (context.isExplicitChain?.(role) ?? true),
+		);
+		if (explicitChain) return explicitChain;
+		const inheritedChain = rolePath.find(role => Array.isArray(context.chains[role]));
+		if (inheritedChain) return inheritedChain;
+	}
+	return undefined;
+}
+
+function resolveRetryFallbackHintedChainKey(
+	context: RetryFallbackResolutionContext,
+	roleHint: string,
+	currentSelector?: string,
+	currentBaseSelector?: string,
+	currentPlainSelector?: string,
+	currentPlainBaseSelector?: string,
+): string | undefined {
+	const hasHintedChain = Array.isArray(context.chains[roleHint]);
+	if (hasHintedChain && (context.isExplicitChain?.(roleHint) ?? true)) return roleHint;
+	const aliasChainKey = resolveRetryFallbackAliasChainKey(
+		context,
+		roleHint,
+		currentSelector,
+		currentBaseSelector,
+		currentPlainSelector,
+		currentPlainBaseSelector,
+	);
+	return aliasChainKey ?? (hasHintedChain ? roleHint : undefined);
+}
+
 /**
  * Resolve the chain key for a concrete selector by specificity: exact model,
- * longest matching wildcard, hinted role, then matching role keys with
- * `default` preferred over other shared assignments, then default.
+ * longest matching wildcard, hinted role or its nearest alias target, then
+ * matching role keys with `default` preferred over other shared assignments,
+ * then default.
  */
 export function resolveRetryFallbackChainKey(
 	context: RetryFallbackResolutionContext,
@@ -283,8 +418,7 @@ export function resolveRetryFallbackChainKey(
 		parsedConfigured ??
 		(currentPlainSelector ? parseRetryFallbackSelector(currentPlainSelector, context.modelLookup) : undefined);
 	if (!parsedCurrent) {
-		if (roleHint && Array.isArray(context.chains[roleHint])) return roleHint;
-		return undefined;
+		return roleHint ? resolveRetryFallbackHintedChainKey(context, roleHint) : undefined;
 	}
 	const currentBaseSelector = formatRetryFallbackBaseSelector(parsedCurrent);
 	const currentPlainBaseSelector =
@@ -328,11 +462,21 @@ export function resolveRetryFallbackChainKey(
 	}
 	if (wildcardMatch) return wildcardMatch;
 
-	// 3. The hinted role, then role keys matched by their assigned model.
-	// A shared assignment (default and vision both the same model) must not
-	// let yaml insertion order steal the live role's chain. Prefer the hint,
-	// then `default` when it also matches.
-	if (roleHint && Array.isArray(context.chains[roleHint])) return roleHint;
+	// 3. An explicit hinted role, its nearest matching alias target, then an
+	//    inherited hinted-role default. A shared assignment (default and vision
+	//    both the same model) must not let yaml insertion order steal the live
+	//    role's chain. `default` still wins over other shared assignments.
+	if (roleHint) {
+		const hintedChainKey = resolveRetryFallbackHintedChainKey(
+			context,
+			roleHint,
+			currentSelector,
+			currentBaseSelector,
+			currentPlainSelector,
+			currentPlainBaseSelector,
+		);
+		if (hintedChainKey) return hintedChainKey;
+	}
 	let matchedRole: string | undefined;
 	for (const key in context.chains) {
 		if (isRetryFallbackModelKey(key)) continue;
@@ -375,28 +519,38 @@ function parseRetryFallbackChainEntry(
 	context: RetryFallbackResolutionContext,
 	entry: string,
 	current: RetryFallbackSelector | undefined,
-): RetryFallbackSelector | undefined {
-	if (!isRetryFallbackWildcardKey(entry)) return parseRetryFallbackSelector(entry, context.modelLookup);
-	if (!current) return undefined;
-	const { provider, idPrefix } = parseRetryFallbackWildcard(entry, candidate =>
-		context.modelLookup.hasProvider(candidate),
-	);
-	const bareId = current.id.slice(current.id.lastIndexOf("/") + 1);
-	let id: string;
-	if (idPrefix !== undefined) {
-		id = `${idPrefix}/${bareId}`;
-	} else if (
-		bareId !== current.id &&
-		!context.modelLookup.find(provider, current.id) &&
-		context.modelLookup.find(provider, bareId)
-	) {
-		// Aggregator → direct: the failing id carries a vendor prefix the
-		// target provider does not use (openrouter/google/x → google-vertex/x).
-		id = bareId;
-	} else {
-		id = current.id;
+): RetryFallbackSelector[] {
+	const aliases = resolveModelRoleAlias(entry, { getModelRole: context.getModelRole });
+	const patterns = aliases?.patterns ?? [{ selector: entry, thinkingLevel: undefined }];
+	const parsedEntries: RetryFallbackSelector[] = [];
+	for (const pattern of patterns) {
+		if (!isRetryFallbackWildcardKey(pattern.selector)) {
+			const parsed = parseRetryFallbackAliasSelector(pattern, context.modelLookup);
+			if (parsed) parsedEntries.push(parsed);
+			continue;
+		}
+		if (pattern.thinkingLevel !== undefined || !current) continue;
+		const { provider, idPrefix } = parseRetryFallbackWildcard(pattern.selector, candidate =>
+			context.modelLookup.hasProvider(candidate),
+		);
+		const bareId = current.id.slice(current.id.lastIndexOf("/") + 1);
+		let id: string;
+		if (idPrefix !== undefined) {
+			id = `${idPrefix}/${bareId}`;
+		} else if (
+			bareId !== current.id &&
+			!context.modelLookup.find(provider, current.id) &&
+			context.modelLookup.find(provider, bareId)
+		) {
+			// Aggregator → direct: the failing id carries a vendor prefix the
+			// target provider does not use (openrouter/google/x → google-vertex/x).
+			id = bareId;
+		} else {
+			id = current.id;
+		}
+		parsedEntries.push({ raw: `${provider}/${id}`, provider, id, thinkingLevel: undefined });
 	}
-	return { raw: `${provider}/${id}`, provider, id, thinkingLevel: undefined };
+	return parsedEntries;
 }
 
 /** Builds a fallback chain beginning with its effective primary selector. */
@@ -438,10 +592,11 @@ function getRetryFallbackEffectiveChain(
 		}
 	}
 	for (const selector of context.chains[chainKey] ?? []) {
-		const parsed = parseRetryFallbackChainEntry(context, selector, parsedCurrent);
-		if (!parsed || seen.has(parsed.raw)) continue;
-		seen.add(parsed.raw);
-		chain.push(parsed);
+		for (const parsed of parseRetryFallbackChainEntry(context, selector, parsedCurrent)) {
+			if (seen.has(parsed.raw)) continue;
+			seen.add(parsed.raw);
+			chain.push(parsed);
+		}
 	}
 	return chain;
 }

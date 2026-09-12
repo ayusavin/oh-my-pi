@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Retry fallback chains now accept `@role` aliases, including nested aliases and explicit thinking suffixes.
+
 ## [18.1.16] - 2026-09-09
 
 ### Added

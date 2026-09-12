@@ -1441,10 +1441,12 @@ export class TurnRecovery {
 	}
 
 	#getRetryFallbackResolutionContext(): RetryFallbackResolutionContext {
+		const configuredChains = this.#host.settings.get("retry.fallbackChains");
 		return {
 			chains: this.#getRetryFallbackChains(),
 			getModelRole: role => this.#host.settings.getModelRole(role),
 			modelLookup: this.#host.modelRegistry,
+			isExplicitChain: chainKey => Array.isArray(configuredChains[chainKey]),
 		};
 	}
 	#getRetryFallbackChains(): RetryFallbackChains {
