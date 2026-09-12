@@ -56,7 +56,7 @@ import { EvalExecutionComponent } from "./eval-execution";
 import { type LateDiagnosticsFile, LateDiagnosticsMessageComponent } from "./late-diagnostics-message";
 import { groupedReadUsageCallIds, ReadToolGroupComponent, readArgsCollapseIntoGroup } from "./read-tool-group";
 import { SkillMessageComponent } from "./skill-message";
-import { type CompactToolCallComponent, type CompactToolGroupHolder, mountCompactToolCall } from "./tool-call-compact";
+import { type CompactToolCallComponent, compactToolCallMode, type CompactToolGroupHolder, mountCompactToolCall } from "./tool-call-compact";
 import { ToolExecutionComponent } from "./tool-execution";
 import { TranscriptContainer } from "./transcript-container";
 import { createUsageRowBlock, turnElapsedMs } from "./usage-row";
@@ -458,8 +458,8 @@ export class ChatTranscriptBuilder {
 			this.#readGroup?.seal();
 			this.#readGroup = null;
 
-			const toolCallDisplay = settings.get("display.toolCalls");
-			if (toolCallDisplay !== "full") {
+			const toolCallDisplay = compactToolCallMode(settings.get("display.toolCalls"));
+			if (toolCallDisplay) {
 				const { group, pending } = mountCompactToolCall(this.container, this.#toolGroup, toolCallDisplay, this.#expanded, content.id, content.name, content.arguments, this.deps.getTool?.(content.name), hasErrorStop && errorMessage ? errorMessage : undefined);
 				this.#trackExpandable(group);
 				if (pending) this.#pendingTools.set(content.id, group);

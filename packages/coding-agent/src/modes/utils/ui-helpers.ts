@@ -32,7 +32,7 @@ import {
 import { SkillMessageComponent } from "../../modes/components/skill-message";
 import { StrippedToolCallsPlaceholder } from "../../modes/components/stripped-tool-calls-placeholder";
 import { ToolActivityContainer } from "../../modes/components/tool-activity";
-import { type CompactToolGroupHolder, mountCompactToolCall } from "../../modes/components/tool-call-compact";
+import { compactToolCallMode, type CompactToolGroupHolder, mountCompactToolCall } from "../../modes/components/tool-call-compact";
 import {
 	ToolExecutionComponent,
 	type ToolExecutionHandle,
@@ -599,8 +599,8 @@ export class UiHelpers {
 							})
 						: content.arguments;
 
-					const toolCallDisplay = this.ctx.settings.get("display.toolCalls");
-					if (toolCallDisplay !== "full") {
+					const toolCallDisplay = compactToolCallMode(this.ctx.settings.get("display.toolCalls"));
+					if (toolCallDisplay) {
 						const { group, pending } = mountCompactToolCall(this.ctx.chatContainer, toolGroup, toolCallDisplay, this.ctx.toolOutputExpanded, content.id, renderToolName, renderArgs, tool, hasErrorStop && errorMessage ? errorMessage : undefined);
 						if (pending) this.ctx.pendingTools.set(content.id, group);
 						appendAssistantSegment(afterToolSegment);

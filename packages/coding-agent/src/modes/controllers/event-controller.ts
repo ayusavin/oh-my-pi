@@ -15,7 +15,7 @@ import {
 	readArgsHaveTarget,
 } from "../../modes/components/read-tool-group";
 import { TodoReminderComponent } from "../../modes/components/todo-reminder";
-import { type CompactToolGroupHolder, mountCompactToolCall } from "../../modes/components/tool-call-compact";
+import { compactToolCallMode, type CompactToolGroupHolder, mountCompactToolCall } from "../../modes/components/tool-call-compact";
 import {
 	ToolExecutionComponent,
 	type ToolExecutionHandle,
@@ -1303,9 +1303,9 @@ export class EventController {
 				if (!this.ctx.pendingTools.has(content.id) && !this.#toolTimelineComponents.has(content.id)) {
 					this.#resolveDisplaceablePoll(renderToolName);
 					this.#resetReadGroup();
-					const toolCallDisplay = settings.get("display.toolCalls");
-					if (toolCallDisplay !== "full") {
-						const { group } = mountCompactToolCall(this.ctx.chatContainer, this.#toolGroup, toolCallDisplay, this.ctx.toolOutputExpanded, content.id, renderToolName, renderArgs, tool);
+					const compactMode = compactToolCallMode(settings.get("display.toolCalls"));
+					if (compactMode) {
+						const { group } = mountCompactToolCall(this.ctx.chatContainer, this.#toolGroup, compactMode, this.ctx.toolOutputExpanded, content.id, renderToolName, renderArgs, tool);
 						this.ctx.pendingTools.set(content.id, group);
 						this.#toolTimelineComponents.set(content.id, group);
 						this.#settleHeldCompletionIfPresent(content.id, group);
@@ -1584,9 +1584,9 @@ export class EventController {
 			}
 
 			this.#resetReadGroup();
-			const toolCallDisplay = settings.get("display.toolCalls");
-			if (toolCallDisplay !== "full") {
-				const { group } = mountCompactToolCall(this.ctx.chatContainer, this.#toolGroup, toolCallDisplay, this.ctx.toolOutputExpanded, event.toolCallId, renderToolName, event.args, tool);
+			const compactMode = compactToolCallMode(settings.get("display.toolCalls"));
+			if (compactMode) {
+				const { group } = mountCompactToolCall(this.ctx.chatContainer, this.#toolGroup, compactMode, this.ctx.toolOutputExpanded, event.toolCallId, renderToolName, event.args, tool);
 				group.setExecutionStarted(event.toolCallId);
 				this.#executionStartedCallIds.add(event.toolCallId);
 				this.ctx.pendingTools.set(event.toolCallId, group);

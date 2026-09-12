@@ -213,6 +213,15 @@ export interface CompactToolGroupHolder {
 }
 
 /**
+ * Narrow a `display.toolCalls` value to the two modes this component draws.
+ * Anything else — `"full"`, an unset key, a settings stub that does not know
+ * the key — yields `undefined`, so the caller keeps the stock tool card.
+ */
+export function compactToolCallMode(value: unknown): "compact" | "grouped" | undefined {
+	return value === "compact" || value === "grouped" ? value : undefined;
+}
+
+/**
  * Get-or-create the `display.toolCalls` handle for a new call, add the call
  * to it, and — for the three creation sites that can settle a call before it
  * ever goes pending (an assistant turn that starts with an error) — apply
