@@ -193,6 +193,23 @@ export function assistantHasVisibleContent(message: AssistantAgentMessage): bool
 }
 
 /**
+ * Whether an assistant turn puts anything on screen: text and images always,
+ * thinking only while it is displayed. The compact tool group closes on this
+ * rather than on {@link assistantHasVisibleContent} — a model emits a thinking
+ * block between practically every pair of tool calls, so counting hidden
+ * thinking splits one group into loose single-call rows. With thinking shown
+ * the two predicates agree.
+ */
+export function assistantHasScreenVisibleContent(message: AssistantAgentMessage, hideThinking: boolean): boolean {
+	return message.content.some(
+		content =>
+			content.type === "image" ||
+			(content.type === "text" && canonicalizeMessage(content.text)) ||
+			(!hideThinking && content.type === "thinking" && canonicalizeMessage(content.thinking)),
+	);
+}
+
+/**
  * Split mixed assistant turns into visible text before tool execution and
  * visible text segments that must render immediately after the preceding tool.
  * Cursor can return intro text, tool calls, progress text, and the final answer

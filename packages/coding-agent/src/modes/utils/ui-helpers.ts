@@ -64,6 +64,7 @@ import {
 	refreshAssistantMessageLinkTargets,
 } from "./interactive-context-helpers";
 import {
+	assistantHasScreenVisibleContent,
 	assistantHasVisibleContent,
 	assistantUsageIsBilled,
 	buildAsyncResultBlock,
@@ -514,12 +515,13 @@ export class UiHelpers {
 						this.ctx.lastAssistantUsage = usage;
 					}
 				}
-				const hasVisibleAssistantContent = assistantHasVisibleContent(message);
-				if (hasVisibleAssistantContent) {
+				if (assistantHasVisibleContent(message)) {
 					// Rebuild reconstructs immutable history; seal (not finalize) because
 					// a pending entry otherwise keeps the group active indefinitely.
 					readGroup?.seal();
 					readGroup = null;
+				}
+				if (assistantHasScreenVisibleContent(message, this.ctx.effectiveHideThinkingBlock)) {
 					resetCompactToolGroup(toolGroup, true);
 				}
 				const errorPresentation = resolveAssistantErrorPresentation(message, this.ctx.viewSession.retryAttempt);

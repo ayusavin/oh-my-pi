@@ -30,6 +30,7 @@ import {
 import type { SessionMessageEntry } from "../../session/session-entries";
 import { theme } from "../theme/theme";
 import {
+	assistantHasScreenVisibleContent,
 	assistantHasVisibleContent,
 	assistantUsageIsBilled,
 	buildAsyncResultBlock,
@@ -405,11 +406,12 @@ export class ChatTranscriptBuilder {
 			this.#lastAssistantUsage = message.usage;
 		}
 
-		const hasVisibleAssistantContent = assistantHasVisibleContent(message);
-		if (hasVisibleAssistantContent) {
+		if (assistantHasVisibleContent(message)) {
 			// New visible turn content closes the current read run (mirrors rebuild).
 			this.#readGroup?.seal();
 			this.#readGroup = null;
+		}
+		if (assistantHasScreenVisibleContent(message, hideThinkingBlock)) {
 			resetCompactToolGroup(this.#toolGroup, true);
 		}
 
