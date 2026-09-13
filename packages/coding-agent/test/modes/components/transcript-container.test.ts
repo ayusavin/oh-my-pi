@@ -524,8 +524,8 @@ describe("TranscriptContainer viewport click spans", () => {
 
 		expect(transcript.renderViewport(80, 10, frame)).toEqual(["a1", "a2", "", "b1"]);
 		expect(transcript.getLastViewportSpans()).toEqual([
-			{ component: first, start: 0, end: 2 },
-			{ component: second, start: 3, end: 4 },
+			{ component: first, start: 0, end: 2, offset: 0 },
+			{ component: second, start: 3, end: 4, offset: 0 },
 		]);
 	});
 
@@ -537,9 +537,11 @@ describe("TranscriptContainer viewport click spans", () => {
 		transcript.addChild(second);
 
 		expect(transcript.renderViewport(80, 5, frame)).toEqual(["a4", "b1", "b2", "b3", "b4"]);
+		// `first` shows only its own row 3, so a hit on that row must address
+		// row 3 of the component, not row 0.
 		expect(transcript.getLastViewportSpans()).toEqual([
-			{ component: first, start: 0, end: 1 },
-			{ component: second, start: 1, end: 5 },
+			{ component: first, start: 0, end: 1, offset: 3 },
+			{ component: second, start: 1, end: 5, offset: 0 },
 		]);
 	});
 

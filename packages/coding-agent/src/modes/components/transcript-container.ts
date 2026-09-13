@@ -138,6 +138,13 @@ export interface TranscriptViewportSpan {
 	component: Component;
 	start: number;
 	end: number;
+	/**
+	 * Leading rows of the component's own render that this output does not
+	 * carry: rows already emitted to native scrollback plus rows a capacity
+	 * clip dropped from the block's top. Hit-testing adds it back, or a
+	 * click/hover on a clipped block addresses the wrong row of it.
+	 */
+	offset: number;
 }
 
 /** Owns transcript order, live capacity, and ordered immutable retirement. */
@@ -302,8 +309,15 @@ export class TranscriptContainer extends Container {
 		return this.#lastViewportSpans;
 	}
 
-	/** Collapse a per-line owner list into run-length block spans, clamped to `length`. */
-	#commitViewportSpans(owners: readonly (Component | undefined)[], length: number = owners.length): void {
+	/** Collapse a per-line owner list into run-length block spans, clamped to
+	 * `length`. `locals[i]` is the row index within its own component's render
+	 * that output row `i` carries, so a span can publish the offset that
+	 * scrollback emission and capacity clipping introduced. */
+	#commitViewportSpans(
+		owners: readonly (Component | undefined)[],
+		locals: readonly number[],
+		length: number = owners.length,
+	): void {
 		const spans: TranscriptViewportSpan[] = [];
 		let index = 0;
 		while (index < length) {
@@ -314,7 +328,7 @@ export class TranscriptContainer extends Container {
 			}
 			let end = index + 1;
 			while (end < length && owners[end] === component) end++;
-			spans.push({ component, start: index, end });
+			spans.push({ component, start: index, end, offset: locals[index] ?? 0 });
 			index = end;
 		}
 		this.#lastViewportSpans = spans;
@@ -334,15 +348,18 @@ export class TranscriptContainer extends Container {
 
 		const shown: Array<{ entry: TranscriptEntry; index: number }> = [];
 		const blocks: (readonly string[])[] = [];
+		const emitted: number[] = [];
 		let total = 0;
 		for (const candidate of live) {
 			this.#setAllocation(candidate.entry.component, Number.MAX_SAFE_INTEGER, frame);
 			const rendered = this.#renderEntry(candidate.entry, width);
-			const block = rendered.slice(this.#projectedEmitted(candidate.entry, candidate.index, width));
+			const alreadyEmitted = this.#projectedEmitted(candidate.entry, candidate.index, width);
+			const block = rendered.slice(alreadyEmitted);
 			if (block.length === 0) continue;
 			total += block.length + (shown.length > 0 ? 1 : 0);
 			shown.push(candidate);
 			blocks.push(block);
+			emitted.push(alreadyEmitted);
 		}
 		if (shown.length === 0) {
 			this.#lastViewportSpans = [];
@@ -352,18 +369,22 @@ export class TranscriptContainer extends Container {
 		if (total <= capacity) {
 			const output: string[] = [];
 			const owners: (Component | undefined)[] = [];
+			const locals: number[] = [];
 			for (let blockIndex = 0; blockIndex < blocks.length; blockIndex++) {
 				if (output.length > 0) {
 					output.push("");
 					owners.push(undefined);
+					locals.push(0);
 				}
 				const component = shown[blockIndex]!.entry.component;
+				let local = emitted[blockIndex]!;
 				for (const line of blocks[blockIndex]!) {
 					output.push(line);
 					owners.push(component);
+					locals.push(local++);
 				}
 			}
-			this.#commitViewportSpans(owners, output.length);
+			this.#commitViewportSpans(owners, locals, output.length);
 			return output;
 		}
 
@@ -388,21 +409,24 @@ export class TranscriptContainer extends Container {
 		}
 		const output: string[] = [];
 		const owners: (Component | undefined)[] = [];
+		const locals: number[] = [];
 		for (let index = 0; index < shown.length; index++) {
 			const candidate = shown[index]!;
 			const allocated = allocation[index]!;
 			this.#setAllocation(candidate.entry.component, allocated, frame);
-			const rendered = this.#renderEntry(candidate.entry, width).slice(
-				this.#projectedEmitted(candidate.entry, candidate.index, width),
-			);
-			const visible = rendered.length <= allocated ? rendered : rendered.slice(rendered.length - allocated);
+			const alreadyEmitted = this.#projectedEmitted(candidate.entry, candidate.index, width);
+			const rendered = this.#renderEntry(candidate.entry, width).slice(alreadyEmitted);
+			const clipped = Math.max(0, rendered.length - allocated);
+			const visible = clipped === 0 ? rendered : rendered.slice(clipped);
+			let local = alreadyEmitted + clipped;
 			for (const line of visible) {
 				output.push(line);
 				owners.push(candidate.entry.component);
+				locals.push(local++);
 			}
 		}
 		const drop = Math.max(0, output.length - capacity);
-		this.#commitViewportSpans(owners.slice(drop), output.length - drop);
+		this.#commitViewportSpans(owners.slice(drop), locals.slice(drop), output.length - drop);
 		return drop > 0 ? output.slice(drop) : output;
 	}
 
@@ -774,21 +798,25 @@ export class TranscriptContainer extends Container {
 
 		const output = hiddenActive > 0 ? [`${hiddenActive} more transcript blocks active`] : [];
 		const owners: (Component | undefined)[] = hiddenActive > 0 ? [undefined] : [];
+		const locals: number[] = hiddenActive > 0 ? [0] : [];
 		for (const candidate of visible) {
 			if (candidate === emergencyCandidate) {
 				output.push(emergencyRow ?? "");
 				owners.push(candidate.entry.component);
+				// A synthesized one-line stand-in owns no row of the component's
+				// own render; row 0 is the only sane address for a hit on it.
+				locals.push(0);
 				continue;
 			}
 			this.#setAllocation(candidate.entry.component, 1, frame);
-			const rendered = this.#renderEntry(candidate.entry, width).slice(
-				this.#projectedEmitted(candidate.entry, candidate.index, width),
-			);
+			const alreadyEmitted = this.#projectedEmitted(candidate.entry, candidate.index, width);
+			const rendered = this.#renderEntry(candidate.entry, width).slice(alreadyEmitted);
 			output.push(rendered[0] ?? "");
 			owners.push(candidate.entry.component);
+			locals.push(alreadyEmitted);
 		}
 		const visibleOutput = output.slice(0, rows);
-		this.#commitViewportSpans(owners, visibleOutput.length);
+		this.#commitViewportSpans(owners, locals, visibleOutput.length);
 		return visibleOutput;
 	}
 

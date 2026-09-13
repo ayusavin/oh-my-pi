@@ -433,8 +433,12 @@ export class Composer implements TerminalFrameProvider {
 			activeSpans.push({
 				start: span.start,
 				end: span.end,
-				candidates: (local: number) => target.getClickFocusAgentIds?.(local) ?? [],
-				action,
+				// `span.offset` names the component's own leading rows this frame
+				// does not carry (already in scrollback, or clipped off the block's
+				// top under capacity pressure). Without adding it back, a click or
+				// hover inside a clipped block addresses a different row of it.
+				candidates: (local: number) => target.getClickFocusAgentIds?.(local + span.offset) ?? [],
+				action: action ? (local: number) => action(local + span.offset) : undefined,
 			});
 		}
 		const drop = Math.max(0, before.length + active.length + after.length - rows);
