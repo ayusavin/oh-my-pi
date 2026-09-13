@@ -241,12 +241,14 @@ function renderGroupLine(entries: readonly CompactCallEntry[]): string {
 	return ` ${renderStatusLine({ icon: status, title, titleColor: "toolTitle" }, theme)}`;
 }
 
-/** C7's per-row clickability gate for one call: settled with a non-empty
- * result — a failure's own error text counts as "more to show" too (req 5).
+/** C7's per-row clickability gate for one call: any settled call, because the
+ * card always shows more than the row — full arguments instead of the row's
+ * truncated `Tool(arg…)`, plus the result (a failure's error text, or an
+ * explicit empty output: `find` with no matches still has a command to read).
  * Shared by three call sites (`#clickable()`, and both branches of
  * `#rowTarget`) that must agree on exactly the same gate. */
 function entryClickable(entry: CompactCallEntry): boolean {
-	return (entry.resultText ?? "").trim().length > 0;
+	return entry.rawResult !== undefined;
 }
 
 /**
@@ -592,6 +594,11 @@ export class CompactToolCallComponent extends Container implements ToolExecution
 	}
 
 	isTranscriptBlockFinalized(): boolean {
+		// An open card holds the block in the mutable viewport even past a seal:
+		// retirement prints the rows into native scrollback, where nothing can
+		// retract them — the group would stay frozen open, unclickable, with no
+		// way back to its one-liner. The closing click releases the hold.
+		if (this.#openCallId !== undefined) return false;
 		if (this.#sealed) return true;
 		if (!this.#finalized) return false;
 		for (const entry of this.#entries.values()) {

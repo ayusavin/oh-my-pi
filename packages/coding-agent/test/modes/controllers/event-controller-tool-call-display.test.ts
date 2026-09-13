@@ -250,6 +250,39 @@ describe("CompactToolCallComponent click-to-expand (C7)", () => {
 		component.setExpanded(true); // re-expanding must not silently resurrect the old open card
 		expect(component.render(120)).toHaveLength(3);
 	});
+
+	it("a settled call whose output is empty still opens: the card shows the full command the row truncated", () => {
+		const component = new CompactToolCallComponent();
+		const command = `find ~/.claude/projects -name "e7ea78bd-2ca4-4de9-af12-a73051af1d89.jsonl" -maxdepth 6 -print`;
+		component.addCall("call-1", "bash", "Bash", { command }, undefined);
+		component.updateResult({ content: [{ type: "text", text: "" }], isError: false }, false, "call-1");
+
+		expect(component.getClickFocusAgentIds(0)).toHaveLength(1);
+		component.getViewportClickAction()!(0);
+		const opened = plain(component.render(120));
+		expect(opened).toContain("-maxdepth 6 -print");
+	});
+
+	it("an open card keeps the block out of native scrollback until the closing click", () => {
+		const component = new CompactToolCallComponent();
+		component.addCall("call-1", "bash", "Bash", { command: "echo one" }, undefined);
+		component.addCall("call-2", "bash", "Bash", { command: "echo two" }, undefined);
+		component.updateResult({ content: [{ type: "text", text: "out one" }], isError: false }, false, "call-1");
+		component.updateResult({ content: [{ type: "text", text: "out two" }], isError: false }, false, "call-2");
+		component.seal();
+		expect(component.isTranscriptBlockFinalized()).toBe(true);
+
+		component.getViewportClickAction()!(0);
+		component.render(120);
+		component.getViewportClickAction()!(2); // open call-2's card
+		component.render(120);
+		// Retiring now would print the open card into scrollback, where no click
+		// can ever collapse it again.
+		expect(component.isTranscriptBlockFinalized()).toBe(false);
+
+		component.getViewportClickAction()!(2); // close it
+		expect(component.isTranscriptBlockFinalized()).toBe(true);
+	});
 });
 
 describe("CompactToolCallComponent ask resultSummary (B)", () => {
