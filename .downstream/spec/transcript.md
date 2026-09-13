@@ -167,7 +167,18 @@ command or the job's own label passes.
 **C7. A row that has more to show is clickable.** Clicking a collapsed row expands it and clicking
 again collapses it, while the keyboard expansion (`ctrl+o`) keeps working unchanged. A row with nothing
 more to show is not clickable, and text selection must survive (`tui.mouse` puts native selection on
-shift+drag).
+shift+drag). Hovering a clickable row marks only that row, never a sibling row sharing its rendered
+block. A grouped row's own two levels each carry this independently: expanding the group keeps its
+summary row in place and lists one dimmed line per call beneath it (never replacing the summary the
+way a flat per-call list would), and clicking one call's own line — dimmed inside an expanded group, or
+a standalone row once it has settled — swaps that one line for the exact card `full` mode would have
+built for it (arguments plus output), reusing that card's own class rather than duplicating its
+rendering; a second click on any of that open card's own rows returns it to the one-line form. This
+two-level shape (summary kept, per-call lines dimmed, per-call click-to-open-a-full-card) is this
+fork's own contract, not sourced from Claude Code: upstream's own documentation confirms click-to-
+expand only at the single collapsed-row level (evidence below) and does not publish how it lays out an
+expanded multi-call group or how it styles hover, so this fork decided that shape directly rather than
+infer it from an undocumented surface.
 
 **C8. Truncation is bounded and never mid-escape.** A primary argument is cut to a fixed budget with a
 single ellipsis; the cut must not split an escape sequence or a multi-byte character.
@@ -209,6 +220,15 @@ single ellipsis; the cut must not split an escape sequence or a multi-byte chara
   "Click to expand collapsed tool results" — the direct precedent for C7. The Bash row's own template
   and any `ctrl+o`/`ctrl+r` keybinding strings sit in compressed regions of that binary and were not
   recoverable, so C1's Bash form rests on the captured sessions above, not on the bundle.
+- **2026-09-13, this fork's own decision, not Claude Code evidence** — the two-level expanded-group
+  layout (retained summary, dimmed per-call lines) and the per-call click-to-open-a-full-card
+  interaction are authored directly for this repository. Upstream evidence only reaches "a row with
+  more to show is clickable" (the classic-TUI help line above) and never documents the expanded
+  group's internal layout or a hover style, so nothing here overrides or contradicts a sourced claim —
+  it fills a gap upstream leaves undocumented. Implemented in
+  `packages/coding-agent/src/modes/components/tool-call-compact.ts` (`CompactToolCallComponent`) and
+  `packages/coding-agent/src/modes/composer.ts` (row-local hover/click routing through
+  `getClickFocusAgentIds`/`getViewportClickAction`).
 
 ## Build notes, from the retired `tools/omp-local/` build
 

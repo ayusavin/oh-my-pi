@@ -170,8 +170,17 @@ export function routeViewportClick(spans: readonly ViewportClickSpan[], index: n
 
 /**
  * Click action under a mutable-viewport line: the first span containing it
- * that carries one. Pure seam for tests, mirroring {@link routeViewportClick};
+ * that carries one, offset to the span's own local coordinates exactly like
+ * {@link routeViewportClick} offsets `candidates`. Pure seam for tests;
  * callers try this before falling back to candidate-based focus routing.
+ *
+ * The returned closure ignores whatever `local` its caller later passes: the
+ * correct span-local row is already known at lookup time (mirroring
+ * `routeViewportClick`'s immediate `span.candidates(index - span.start)`
+ * call), so re-deriving it from a caller-supplied value would silently
+ * misroute every row for a span that does not start at index 0 — a row-aware
+ * action reading a foreign row's local index (e.g. one call's row read as
+ * another's) is indistinguishable from a swallowed click.
  */
 export function routeViewportClickAction(
 	spans: readonly ViewportClickSpan[],
@@ -180,7 +189,10 @@ export function routeViewportClickAction(
 	if (!Number.isInteger(index) || index < 0) return undefined;
 	for (const span of spans) {
 		if (index < span.start || index >= span.end) continue;
-		return span.action;
+		const action = span.action;
+		if (!action) return undefined;
+		const spanLocal = index - span.start;
+		return () => action(spanLocal);
 	}
 	return undefined;
 }
@@ -407,13 +419,23 @@ export class Composer implements TerminalFrameProvider {
 		const activeSpans: ViewportClickSpan[] = [];
 		for (const span of transcript.getLastViewportSpans()) {
 			const target = span.component as Partial<{
-				getClickFocusAgentIds(): string[];
-				getViewportClickAction(): (() => void) | undefined;
+				getClickFocusAgentIds(local?: number): string[];
+				getViewportClickAction(): ((local: number) => void) | undefined;
 			}>;
+			// The pre-check stays a single no-arg call (existing components that
+			// never take `local` — e.g. a live subagent's own task card — answer it
+			// unchanged); routing itself asks the target row-by-row so a multi-row
+			// block (a compact group's own per-call lines) bands only the hovered
+			// row instead of its whole span.
 			const ids = target.getClickFocusAgentIds?.();
 			const action = target.getViewportClickAction?.();
 			if ((!ids || ids.length === 0) && action === undefined) continue;
-			activeSpans.push({ start: span.start, end: span.end, candidates: () => ids ?? [], action });
+			activeSpans.push({
+				start: span.start,
+				end: span.end,
+				candidates: (local: number) => target.getClickFocusAgentIds?.(local) ?? [],
+				action,
+			});
 		}
 		const drop = Math.max(0, before.length + active.length + after.length - rows);
 		const mutable = [...before, ...active, ...after].slice(drop);
