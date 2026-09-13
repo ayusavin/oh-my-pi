@@ -48,24 +48,25 @@ describe("routeViewportClick", () => {
 });
 
 describe("routeViewportClickAction", () => {
-	it("returns the hit span's action, mirroring routeViewportClick's span lookup", () => {
+	it("dispatches the hit span's action at the span-local row, mirroring routeViewportClick's lookup", () => {
 		let hitLocal = -1;
 		const spans: ViewportClickSpan[] = [
 			{
-				start: 0,
-				end: 2,
+				start: 2,
+				end: 5,
 				candidates: () => [],
 				action: local => {
 					hitLocal = local;
 				},
 			},
-			{ start: 3, end: 5, candidates: () => ["B"] },
+			{ start: 5, end: 7, candidates: () => ["B"] },
 		];
-		expect(routeViewportClickAction(spans, 1)).toBe(spans[0]!.action);
-		spans[0]!.action!(1);
+		// Absolute viewport row 3 is the span's own row 1: a span that does not
+		// start at row 0 must not hand its action a foreign row index.
+		routeViewportClickAction(spans, 3)!(99);
 		expect(hitLocal).toBe(1);
 		// A span without an action yields undefined, not the next span's.
-		expect(routeViewportClickAction(spans, 4)).toBeUndefined();
+		expect(routeViewportClickAction(spans, 6)).toBeUndefined();
 	});
 
 	it("misses separators, out-of-range rows, and non-integer indexes", () => {

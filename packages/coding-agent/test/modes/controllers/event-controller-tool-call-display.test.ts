@@ -74,7 +74,7 @@ describe("CompactToolCallComponent click-to-expand (C7)", () => {
 		expect(collapsed.split("\n")).toHaveLength(1);
 		expect(first.getViewportClickAction()).toBeDefined();
 
-		first.getViewportClickAction()!();
+		first.getViewportClickAction()!(0);
 		const expanded = plain(first.render(120));
 		expect(expanded.split("\n").length).toBeGreaterThan(1);
 		expect(expanded).toContain("out one");
@@ -84,14 +84,14 @@ describe("CompactToolCallComponent click-to-expand (C7)", () => {
 		// acts on it alone — opening its own card, not the first row's.
 		expect(plain(second.render(120)).split("\n")).toHaveLength(1);
 		expect(second.getViewportClickAction()).toBeDefined();
-		second.getViewportClickAction()!();
+		second.getViewportClickAction()!(0);
 		const siblingExpanded = plain(second.render(120));
 		expect(siblingExpanded.split("\n").length).toBeGreaterThan(1);
 		expect(siblingExpanded).toContain("out two");
 		expect(siblingExpanded).not.toContain("out one");
 
 		// A second click collapses the first row back.
-		first.getViewportClickAction()!();
+		first.getViewportClickAction()!(0);
 		expect(plain(first.render(120)).split("\n")).toHaveLength(1);
 	});
 
@@ -103,7 +103,7 @@ describe("CompactToolCallComponent click-to-expand (C7)", () => {
 		expect(collapsed.split("\n")).toHaveLength(1);
 		expect(collapsed).toContain("2 shell commands");
 
-		component.getViewportClickAction()!();
+		component.getViewportClickAction()!(0);
 		const expandedLines = component.render(120);
 		expect(expandedLines).toHaveLength(3);
 		expect(expandedLines[1]).toContain("\x1b[2m"); // per-call lines are dimmed (C7)
@@ -113,7 +113,7 @@ describe("CompactToolCallComponent click-to-expand (C7)", () => {
 		expect(expanded).toContain("echo first");
 		expect(expanded).toContain("echo second");
 
-		component.getViewportClickAction()!();
+		component.getViewportClickAction()!(0);
 		expect(plain(component.render(120))).toBe(collapsed);
 	});
 
@@ -143,11 +143,11 @@ describe("CompactToolCallComponent click-to-expand (C7)", () => {
 		expect(plain(component.render(120)).split("\n")).toHaveLength(1);
 
 		// …while a click override on this row stays independent of it.
-		component.getViewportClickAction()!();
+		component.getViewportClickAction()!(0);
 		expect(plain(component.render(120)).split("\n")).toHaveLength(3);
 		component.setExpanded(false);
 		expect(plain(component.render(120)).split("\n")).toHaveLength(3);
-		component.getViewportClickAction()!();
+		component.getViewportClickAction()!(0);
 		expect(plain(component.render(120)).split("\n")).toHaveLength(1);
 		// With the override cleared and the baseline false, the row is collapsed again.
 		component.setExpanded(false);
@@ -172,15 +172,15 @@ describe("CompactToolCallComponent click-to-expand (C7)", () => {
 		component.addCall("call-2", "bash", "Bash", { command: "echo two" }, undefined);
 		component.updateResult({ content: [{ type: "text", text: "out one" }], isError: false }, false, "call-1");
 		component.updateResult({ content: [{ type: "text", text: "out two" }], isError: false }, false, "call-2");
-		component.getViewportClickAction()!(); // expand: row 0 = summary, row 1 = call-1, row 2 = call-2
+		component.getViewportClickAction()!(0); // expand: row 0 = summary, row 1 = call-1, row 2 = call-2
 
 		component.getViewportClickAction()!(2); // click call-2's own dimmed line
 		const openedLines = component.render(120);
 		expect(openedLines.length).toBeGreaterThan(3);
 		const opened = plain(openedLines);
 		expect(opened).toContain("out two");
-		expect(plain(openedLines[0]!)).toContain("2 shell commands"); // summary untouched
-		expect(plain(openedLines[1]!)).toContain("echo one"); // call-1 stays a dimmed one-liner
+		expect(plain([openedLines[0]!])).toContain("2 shell commands"); // summary untouched
+		expect(plain([openedLines[1]!])).toContain("echo one"); // call-1 stays a dimmed one-liner
 
 		const ui: ToolExecutionUi = { requestRender() {}, requestComponentRender() {}, resetDisplay() {} };
 		const reference = new ToolExecutionComponent("bash", { command: "echo two" }, {}, undefined, ui, undefined, "call-2");
@@ -194,8 +194,8 @@ describe("CompactToolCallComponent click-to-expand (C7)", () => {
 		component.getViewportClickAction()!(openedLines.length - 1);
 		const closedLines = component.render(120);
 		expect(closedLines).toHaveLength(3);
-		expect(plain(closedLines[2]!)).toContain("echo two");
-		expect(plain(closedLines[2]!)).not.toContain("out two");
+		expect(plain([closedLines[2]!])).toContain("echo two");
+		expect(plain([closedLines[2]!])).not.toContain("out two");
 	});
 
 	it("hovering one row in an expanded group bands only that row's own id, never a sibling's or the summary's", () => {
@@ -204,7 +204,7 @@ describe("CompactToolCallComponent click-to-expand (C7)", () => {
 		component.addCall("call-2", "bash", "Bash", { command: "echo two" }, undefined);
 		component.updateResult({ content: [{ type: "text", text: "out one" }], isError: false }, false, "call-1");
 		component.updateResult({ content: [{ type: "text", text: "out two" }], isError: false }, false, "call-2");
-		component.getViewportClickAction()!();
+		component.getViewportClickAction()!(0);
 		component.render(120);
 
 		const summaryIds = component.getClickFocusAgentIds(0);
@@ -222,7 +222,7 @@ describe("CompactToolCallComponent click-to-expand (C7)", () => {
 		component.addCall("call-2", "bash", "Bash", { command: "echo two" }, undefined);
 		component.updateResult({ content: [{ type: "text", text: "out one" }], isError: false }, false, "call-1");
 		// call-2 never settles.
-		component.getViewportClickAction()!();
+		component.getViewportClickAction()!(0);
 		component.render(120);
 
 		expect(component.getClickFocusAgentIds(2)).toEqual([]);
@@ -245,7 +245,7 @@ describe("CompactToolCallComponent click-to-expand (C7)", () => {
 		component.setExpanded(false); // ctrl+o collapses the whole group back to its summary
 		const collapsed = component.render(120);
 		expect(collapsed).toHaveLength(1);
-		expect(plain(collapsed[0]!)).toContain("2 shell commands");
+		expect(plain(collapsed)).toContain("2 shell commands");
 
 		component.setExpanded(true); // re-expanding must not silently resurrect the old open card
 		expect(component.render(120)).toHaveLength(3);
