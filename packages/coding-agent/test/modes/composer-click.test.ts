@@ -48,24 +48,25 @@ describe("routeViewportClick", () => {
 });
 
 describe("routeViewportClickAction", () => {
-	it("returns the hit span's action, mirroring routeViewportClick's span lookup", () => {
+	it("dispatches the hit span's action at the span-local row, mirroring routeViewportClick's lookup", () => {
 		let hitLocal = -1;
 		const spans: ViewportClickSpan[] = [
 			{
-				start: 0,
-				end: 2,
+				start: 2,
+				end: 5,
 				candidates: () => [],
 				action: local => {
 					hitLocal = local;
 				},
 			},
-			{ start: 3, end: 5, candidates: () => ["B"] },
+			{ start: 5, end: 7, candidates: () => ["B"] },
 		];
-		expect(routeViewportClickAction(spans, 1)).toBe(spans[0]!.action);
-		spans[0]!.action!(1);
+		// Absolute viewport row 3 is the span's own row 1: a span that does not
+		// start at row 0 must not hand its action a foreign row index.
+		routeViewportClickAction(spans, 3)!(99);
 		expect(hitLocal).toBe(1);
 		// A span without an action yields undefined, not the next span's.
-		expect(routeViewportClickAction(spans, 4)).toBeUndefined();
+		expect(routeViewportClickAction(spans, 6)).toBeUndefined();
 	});
 
 	it("misses separators, out-of-range rows, and non-integer indexes", () => {
@@ -300,6 +301,45 @@ describe("composer click-to-toggle through a real renderFrame", () => {
 			const collapsed = Bun.stripANSI(composer.renderFrame({ columns: 80, rows: 24 }).viewport.join("\n"));
 			expect(collapsed).toContain("2 shell commands");
 			expect(collapsed).not.toContain("echo one");
+		} finally {
+			composer.stop();
+		}
+	});
+
+	// Regression: a compact group's own row-to-entry mapping must stay
+	// correct when the group's rendered span does not start at viewport row
+	// 0 — `routeViewportClickAction`'s span-local offset composes with the
+	// group's own per-row dispatch (`CompactToolCallComponent`'s row target
+	// resolution), so a click well below the group's first row still opens
+	// the entry that row actually belongs to.
+	it("opens the correct subordinate call when the group's span does not start at viewport row 0", () => {
+		const term = new VirtualTerminal(80, 24);
+		const composer = new Composer({ terminal: term, preferences: { ...COMPOSER_DEFAULTS, quiet: true } });
+		composer.start();
+		try {
+			const transcript = new TranscriptContainer();
+			const holder: CompactToolGroupHolder = { current: undefined };
+			mountCompactToolCall(transcript, holder, "grouped", false, "call-1", "bash", { command: "echo one" }, undefined);
+			mountCompactToolCall(transcript, holder, "grouped", false, "call-2", "bash", { command: "echo two" }, undefined);
+			const group = holder.current!;
+			group.updateResult({ content: [{ type: "text", text: "out one" }], isError: false }, false, "call-1");
+			group.updateResult({ content: [{ type: "text", text: "out two" }], isError: false }, false, "call-2");
+			// Padding rows ahead of the transcript push the group's own span off viewport row 0.
+			composer.setRuntimeChildren([new CountingBlock(["padding a", "padding b", "padding c"]), transcript]);
+
+			let frame = composer.renderFrame({ columns: 80, rows: 24 });
+			const groupRow = frame.viewport.findIndex(line => line.includes("shell command"));
+			expect(groupRow).toBeGreaterThan(0);
+			composer.viewportClickAction(groupRow)!(groupRow); // expand the group
+
+			frame = composer.renderFrame({ columns: 80, rows: 24 });
+			const call2Row = frame.viewport.findIndex(line => Bun.stripANSI(line).includes("echo two"));
+			expect(call2Row).toBeGreaterThan(groupRow);
+			composer.viewportClickAction(call2Row)!(call2Row); // click call-2's own dimmed line
+
+			const opened = Bun.stripANSI(composer.renderFrame({ columns: 80, rows: 24 }).viewport.join("\n"));
+			expect(opened).toContain("out two");
+			expect(opened).not.toContain("out one");
 		} finally {
 			composer.stop();
 		}
