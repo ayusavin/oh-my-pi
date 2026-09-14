@@ -88,6 +88,15 @@ const SUBAGENT_TOOL_NAMES: Record<string, true> = { task: true };
 
 const GENERIC_ARG_KEYS = ["command", "path", "input"] as const;
 
+/** Tools whose primary argument is not any of the generic keys, or whose
+ * generic key is the less informative one: a `grep` row that reads `Grep` or
+ * `Grep(src)` hides the only thing the call was about. */
+const PRIMARY_ARG_KEYS: Record<string, readonly string[]> = {
+	glob: ["path", "pattern"],
+	grep: ["pattern", "path"],
+	web_search: ["query"],
+};
+
 function isPlainArgs(args: unknown): args is Record<string, unknown> {
 	return !!args && typeof args === "object" && !Array.isArray(args);
 }
@@ -98,9 +107,9 @@ function isPlainArgs(args: unknown): args is Record<string, unknown> {
  * restricted to scalar strings — an array or object value is skipped rather
  * than serialized, so a collection argument never reaches the row (C1, C6).
  */
-function genericPrimaryArgument(args: unknown): string | undefined {
+function genericPrimaryArgument(toolName: string, args: unknown): string | undefined {
 	if (!isPlainArgs(args)) return undefined;
-	for (const key of GENERIC_ARG_KEYS) {
+	for (const key of PRIMARY_ARG_KEYS[toolName] ?? GENERIC_ARG_KEYS) {
 		const value = args[key];
 		if (typeof value === "string" && value.length > 0) return value.split("\n", 1)[0];
 	}
@@ -131,7 +140,7 @@ function resolveActivitySummary(
 			// A renderer hint must never break rendering.
 		}
 	}
-	const detail = genericPrimaryArgument(entry.args);
+	const detail = genericPrimaryArgument(entry.toolName, entry.args);
 	return detail ? { label: entry.label, detail } : { label: entry.label };
 }
 
@@ -161,7 +170,24 @@ function firstErrorLine(text: string | undefined): string | undefined {
  * instead shows its first error line, and a settled call with a
  * `resultSummary` hook (ask's chosen answer, B) shows that instead.
  */
-function renderCallLine(entry: CompactCallEntry): string {
+/**
+ * Leading column that says what a click on this row does, so the affordance
+ * is readable from a still screenshot instead of discovered by trial: `▸`
+ * opens (a collapsed group, or a call whose full card is closed), `▾` closes
+ * what is currently open, and a blank column means the row has nothing more
+ * to show — exactly the rows that carry no click target.
+ */
+function rowMarker(state: "open" | "closed" | "inert"): string {
+	if (state === "inert") return " ";
+	return theme.fg("dim", state === "open" ? "▾" : "▸");
+}
+
+/** Subordinate rows of an expanded group, and the open card, sit one marker
+ * column plus one glyph in from the summary, so nesting is visible without
+ * relying on hover. */
+const NEST_INDENT = "   ";
+
+function renderCallLine(entry: CompactCallEntry, prefix: string): string {
 	const status: ToolUIStatus = entry.outcome === "pending" ? "pending" : entry.outcome === "error" ? "error" : "done";
 	const title = formatPrimaryText(resolveActivitySummary(entry));
 	const meta: string[] = [];
@@ -180,7 +206,7 @@ function renderCallLine(entry: CompactCallEntry): string {
 			meta.push(truncateToWidth(entry.resultSummary.replace(/\s+/g, " ").trim(), TRUNCATE_LENGTHS.LINE, Ellipsis.Unicode));
 		}
 	}
-	return ` ${renderStatusLine({ icon: status, title, titleColor: "toolTitle", meta }, theme)}`;
+	return `${prefix}${renderStatusLine({ icon: status, title, titleColor: "toolTitle", meta }, theme)}`;
 }
 
 interface GroupNoun {
@@ -225,7 +251,7 @@ function groupPhrase(toolName: string, label: string, count: number): string {
  * here. A mixed-tool run names the tools (`2 shell commands, 1 file
  * written`), not the total.
  */
-function renderGroupLine(entries: readonly CompactCallEntry[]): string {
+function renderGroupLine(entries: readonly CompactCallEntry[], expanded: boolean): string {
 	const byTool = new Map<string, { label: string; count: number }>();
 	for (const entry of entries) {
 		const bucket = byTool.get(entry.toolName);
@@ -238,7 +264,7 @@ function renderGroupLine(entries: readonly CompactCallEntry[]): string {
 	const pending = entries.some(entry => entry.outcome === "pending");
 	const failed = entries.some(entry => entry.outcome === "error");
 	const status: ToolUIStatus = pending ? "pending" : failed ? "error" : "done";
-	return ` ${renderStatusLine({ icon: status, title, titleColor: "toolTitle" }, theme)}`;
+	return `${rowMarker(expanded ? "open" : "closed")} ${renderStatusLine({ icon: status, title, titleColor: "toolTitle" }, theme)}`;
 }
 
 /** C7's per-row clickability gate for one call: any settled call, because the
@@ -483,7 +509,9 @@ export class CompactToolCallComponent extends Container implements ToolExecution
 		let row = 1;
 		for (const entry of entries) {
 			const isOpen = this.#openCallId === entry.toolCallId;
-			const span = isOpen ? Math.max(1, this.#lastCardRows) : 1;
+			// An open call owns its header row plus every row of its card; a
+			// click anywhere in that run closes it again.
+			const span = isOpen ? 1 + Math.max(0, this.#lastCardRows) : 1;
 			if (local < row + span) {
 				if (isOpen) return { id: entry.clickId, onClick: () => this.#closeOpenCard() };
 				if (!entryClickable(entry)) return undefined;
@@ -573,7 +601,9 @@ export class CompactToolCallComponent extends Container implements ToolExecution
 	override render(width: number): readonly string[] {
 		if (!this.#toolActivityVisible) return [];
 		const beforeLines = this.#beforeText.render(width);
-		const cardLines = this.#openCard ? this.#openCard.render(width) : [];
+		const cardLines = this.#openCard
+			? this.#openCard.render(Math.max(1, width - NEST_INDENT.length)).map(line => `${NEST_INDENT}${line}`)
+			: [];
 		this.#lastCardRows = cardLines.length;
 		const afterLines = this.#afterText.render(width);
 		if (beforeLines.length === 0 && cardLines.length === 0 && afterLines.length === 0) return [];
@@ -634,22 +664,27 @@ export class CompactToolCallComponent extends Container implements ToolExecution
 			const expanded = this.#rowExpanded ?? this.#expanded;
 			if (!expanded) {
 				if (this.#openCallId !== undefined) this.#closeOpenCardInternal();
-				beforeLines = [renderGroupLine(entries)];
+				beforeLines = [renderGroupLine(entries, false)];
 			} else {
-				beforeLines = [renderGroupLine(entries)];
-				let pastOpen = false;
+				beforeLines = [renderGroupLine(entries, true)];
+				let sink = beforeLines;
 				for (const entry of entries) {
-					if (entry.toolCallId === this.#openCallId) {
-						pastOpen = true;
-						continue;
-					}
-					const line = dimLine(renderCallLine(entry));
-					(pastOpen ? afterLines : beforeLines).push(line);
+					const isOpen = entry.toolCallId === this.#openCallId;
+					const marker = rowMarker(isOpen ? "open" : entryClickable(entry) ? "closed" : "inert");
+					// The open call keeps its own header above the card, so the row
+					// that closes it again is on screen and marked `▾`.
+					sink.push(dimLine(renderCallLine(entry, `${NEST_INDENT}${marker} `)));
+					if (isOpen) sink = afterLines;
 				}
 			}
 		} else {
 			const entry = entries[0];
-			beforeLines = entry && this.#openCallId !== entry.toolCallId ? [renderCallLine(entry)] : [];
+			if (!entry) beforeLines = [];
+			else {
+				const isOpen = this.#openCallId === entry.toolCallId;
+				const marker = rowMarker(isOpen ? "open" : entryClickable(entry) ? "closed" : "inert");
+				beforeLines = [renderCallLine(entry, `${marker} `)];
+			}
 		}
 		this.#beforeText.setText(beforeLines.join("\n"));
 		this.#afterText.setText(afterLines.join("\n"));

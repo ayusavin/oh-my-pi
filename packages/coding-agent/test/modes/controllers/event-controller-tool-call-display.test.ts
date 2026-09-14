@@ -51,6 +51,13 @@ describe("CompactToolCallComponent", () => {
 		expect(text).not.toContain("ok");
 		expect(text).not.toContain("B)");
 	});
+
+	it("a search row carries its pattern, not its directory", () => {
+		const component = new CompactToolCallComponent();
+		component.addCall("call-1", "grep", "Grep", { pattern: "codex_pool_models", path: "ansible" }, undefined);
+		component.updateResult({ content: [{ type: "text", text: "hit" }], isError: false }, false, "call-1");
+		expect(plain(component.render(120))).toContain("Grep(codex_pool_models)");
+	});
 });
 
 describe("CompactToolCallComponent click-to-expand (C7)", () => {
@@ -117,6 +124,25 @@ describe("CompactToolCallComponent click-to-expand (C7)", () => {
 		expect(plain(component.render(120))).toBe(collapsed);
 	});
 
+	it("marks every row with what a click does: ▸ opens, ▾ closes, blank means nothing to show", () => {
+		const component = new CompactToolCallComponent();
+		component.addCall("call-1", "bash", "Bash", { command: "echo one" }, undefined);
+		component.addCall("call-2", "bash", "Bash", { command: "echo two" }, undefined);
+		component.updateResult({ content: [{ type: "text", text: "out one" }], isError: false }, false, "call-1");
+		// call-2 never settles: its row has no card to open.
+		expect(plain(component.render(120)).startsWith("▸ ")).toBe(true);
+
+		component.getViewportClickAction()!(0);
+		const expanded = plain(component.render(120)).split("\n");
+		expect(expanded[0]!.startsWith("▾ ")).toBe(true);
+		expect(expanded[1]!.startsWith("   ▸ ")).toBe(true);
+		expect(expanded[2]!.startsWith("     ")).toBe(true); // pending sibling: no marker
+
+		component.getViewportClickAction()!(1); // open call-1's card
+		const opened = plain(component.render(120)).split("\n");
+		expect(opened[1]!.startsWith("   ▾ ")).toBe(true);
+	});
+
 	it("a wheel report is not a left click and toggles nothing", () => {
 		const component = new CompactToolCallComponent();
 		component.addCall("call-1", "bash", "Bash", { command: "echo hi" }, undefined);
@@ -181,6 +207,9 @@ describe("CompactToolCallComponent click-to-expand (C7)", () => {
 		expect(opened).toContain("out two");
 		expect(plain([openedLines[0]!])).toContain("2 shell commands"); // summary untouched
 		expect(plain([openedLines[1]!])).toContain("echo one"); // call-1 stays a dimmed one-liner
+		// The open call keeps its own header row above the card, so the row that
+		// closes it again is on screen.
+		expect(plain([openedLines[2]!])).toContain("echo two");
 
 		const ui: ToolExecutionUi = { requestRender() {}, requestComponentRender() {}, resetDisplay() {} };
 		const reference = new ToolExecutionComponent("bash", { command: "echo two" }, {}, undefined, ui, undefined, "call-2");
@@ -188,7 +217,10 @@ describe("CompactToolCallComponent click-to-expand (C7)", () => {
 		reference.setArgsComplete("call-2");
 		reference.setExecutionStarted("call-2");
 		reference.updateResult({ content: [{ type: "text", text: "out two" }], isError: false }, false, "call-2");
-		expect(plain(openedLines.slice(2))).toBe(plain(reference.render(120)));
+		// Card rows are the stock card's own, indented under the header.
+		const cardRows = openedLines.slice(3).map(line => Bun.stripANSI(line));
+		expect(cardRows.every(row => row.startsWith("   "))).toBe(true);
+		expect(cardRows.map(row => row.slice(3)).join("\n")).toBe(plain(reference.render(117)));
 
 		// A second click on any of the open card's own rows restores the dimmed line.
 		component.getViewportClickAction()!(openedLines.length - 1);

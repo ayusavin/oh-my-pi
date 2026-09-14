@@ -183,6 +183,15 @@ infer it from an undocumented surface.
 **C8. Truncation is bounded and never mid-escape.** A primary argument is cut to a fixed budget with a
 single ellipsis; the cut must not split an escape sequence or a multi-byte character.
 
+**C9. The affordance is readable without hovering.** Every row states in its own leading column what a
+click on it does: `▸` opens (a collapsed group, or a settled call whose card is closed), `▾` closes
+what is open, and a blank column means the row has nothing more to show — exactly the rows that carry
+no click target. The subordinate rows of an expanded group, and an open call's card, are indented under
+the summary so nesting is visible in a still screenshot; an open call keeps its own header row above
+its card, so the row that closes it again is always on screen. Hover marking (C7) is an addition to
+this, never the only signal: a static transcript, a screenshot, and a scrollback copy all still say
+which rows are interactive and which of them are open.
+
 ### Evidence for this contract
 
 - Row shape and argument echo, Claude Code 2.1.150, full captured session:
