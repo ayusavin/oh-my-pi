@@ -186,6 +186,27 @@ describe("TranscriptContainer", () => {
 		expect(transcript.peekFinalizedBatch(80, 0)?.rows).toEqual(["two", ""]);
 	});
 
+	it("separates the next block from rows the previous block already streamed out", () => {
+		const transcript = new TranscriptContainer();
+		const streamed = new AppendBlock(["one", "two"], ["one", "two"]);
+		transcript.addChild(streamed);
+
+		// The whole block leaves row by row under pressure, so the commit that
+		// retires it contributes nothing itself.
+		for (const row of ["one", "two"]) {
+			const emitted = transcript.peekFinalizedBatch(80, 0)!;
+			expect(emitted.rows).toEqual([row]);
+			transcript.acknowledgeFinalizedBatch(emitted.id);
+		}
+		streamed.finalize(["one", "two"]);
+
+		const next = new Block(["next block"], true);
+		transcript.addChild(next);
+		// Without a leading blank the new block would touch the streamed rows
+		// already printed into native scrollback.
+		expect(transcript.peekFinalizedBatch(80, 0)?.rows).toEqual(["", "next block", ""]);
+	});
+
 	it("emits only the stable current head under row pressure", () => {
 		const transcript = new TranscriptContainer();
 		const head = new Block(["mutable head"], false);

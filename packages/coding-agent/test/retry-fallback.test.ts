@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { Effort } from "@oh-my-pi/pi-ai";
+import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import type { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -169,7 +169,7 @@ describe("retry fallback selector resolution", () => {
 				raw: "openai/gpt-4o-mini:high",
 				provider: "openai",
 				id: "gpt-4o-mini",
-				thinkingLevel: Effort.High,
+				thinkingLevel: ThinkingLevel.High,
 			},
 		]);
 	});
@@ -313,6 +313,15 @@ describe("retry fallback selector resolution", () => {
 				"google/gemini-2.5-flash",
 			),
 		).toEqual([]);
+	});
+
+	it("carries per-entry thinking levels while bare entries inherit", () => {
+		const context = createContext({ default: ["openai/gpt-4o-mini:low", "google/gemini-2.5-flash"] });
+		const candidates = findRetryFallbackCandidates(context, "default", "openai/gpt-4o-mini");
+		expect(candidates.map(candidate => candidate.raw)).toEqual(["openai/gpt-4o-mini:low", "google/gemini-2.5-flash"]);
+		expect(candidates[0]?.thinkingLevel).toBe(ThinkingLevel.Low);
+		// Bare entries carry no level so the failing turn's effort applies at switch time.
+		expect(candidates[1]?.thinkingLevel).toBeUndefined();
 	});
 
 	it("inherits the default chain only for roles without an explicit chain", () => {

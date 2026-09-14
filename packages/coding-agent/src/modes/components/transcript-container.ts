@@ -154,6 +154,9 @@ export class TranscriptContainer extends Container {
 	#nextBatchId = 1;
 	#offered: Offered | undefined;
 	#replayPending = false;
+	/** Scrollback's last printed row is a block's own row, so the next emission
+	 * owes the blank that separates it from a new block. */
+	#emissionOpen = false;
 	#replayRequested = false;
 	#toolActivityVisible = true;
 	#lastFrame: AnimationFrame = { tick: 0, now: 0 };
@@ -580,6 +583,10 @@ export class TranscriptContainer extends Container {
 			}
 			this.#frontier = offered.end;
 		}
+		// A per-row append leaves the cursor directly under a block's own row;
+		// only a range emission ends with the blank that separates two blocks.
+		// The next emission reads this to decide whether it owes that blank.
+		this.#emissionOpen = offered.batch.rows.at(-1) !== "";
 		this.#offered = undefined;
 		if (this.#replayRequested) this.#startReplay();
 	}
@@ -700,6 +707,10 @@ export class TranscriptContainer extends Container {
 
 	#renderRange(start: number, end: number, width: number, trailingBlank: boolean): readonly string[] {
 		const rows: string[] = [];
+		// A range head whose rows already went out row by row contributes nothing
+		// here, yet its rows are on screen: the next block still needs the blank
+		// that separates two blocks, or it lands flush against them.
+		let emittedAbove = false;
 		for (let index = start; index < end; index++) {
 			const entry = this.#entries[index]!;
 			this.#setAllocation(entry.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
@@ -711,8 +722,13 @@ export class TranscriptContainer extends Container {
 				index === start ? this.#renderEntry(entry, width) : trimBlankEdges(entry.component.render(width));
 			const emittedRows = index === start ? this.#renderStablePrefix(entry, entry.emitted, width).length : 0;
 			const block = rendered.slice(emittedRows);
-			if (block.length === 0) continue;
-			if (rows.length > 0) rows.push("");
+			if (block.length === 0) {
+				if (emittedRows > 0) emittedAbove = true;
+				continue;
+			}
+			const continuing = index === start && emittedRows > 0;
+			if (rows.length > 0 || emittedAbove || (this.#emissionOpen && !continuing)) rows.push("");
+			emittedAbove = false;
 			rows.push(...block);
 		}
 		if (trailingBlank && rows.length > 0) rows.push("");

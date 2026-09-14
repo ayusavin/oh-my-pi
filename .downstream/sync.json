@@ -1,9 +1,13 @@
 {
   "upstreamRepo": "https://github.com/can1357/oh-my-pi.git",
-  "upstreamTag": "v18.1.18",
-  "upstreamCommit": "00085d4e7dfdcfbf302c122fa2682b410a0f43d1",
-  "mergedAt": "2026-09-12",
+  "upstreamTag": "v18.1.21",
+  "upstreamCommit": "a2501722aa05670eeab327ea1325e3fde55e51a9",
+  "mergedAt": "2026-09-14",
   "patches": [
-    "feat(retry): accept role aliases in fallback chain entries"
+    "feat(retry): accept role aliases in fallback chain entries",
+    "feat(display): display.toolCalls full|compact|grouped",
+    "feat(advisor): advisor.display all|blockers|none",
+    "feat(compact): row markers, nesting, click-to-expand and hover banding",
+    "fix(transcript): span-local click geometry and block separators in scrollback"
   ]
 }
