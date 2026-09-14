@@ -200,6 +200,13 @@ call succeeded, and failed only when every call failed. A single failure among s
 paint the whole run red — the row is the only thing a reader sees while it is collapsed, and the
 failure is still on its own line once the group is expanded.
 
+**C11. Clickability must be revocable without a restart.** Mouse reporting takes drag away from the
+terminal, so native text selection is only reachable through the terminal's bypass modifier
+(shift+drag), which some terminals — Warp among them — do not pass through. A session-scoped
+keybinding (`app.mouse.toggle`, default `alt+s`) therefore releases capture and takes it back, and
+the release wins over `tui.mouse`. Proof is the pty byte stream: the terminal must see
+`\x1b[?1003l\x1b[?1000l` on release and `\x1b[?1000h\x1b[?1003h` on retake.
+
 ### Evidence for this contract
 
 - Row shape and argument echo, Claude Code 2.1.150, full captured session:

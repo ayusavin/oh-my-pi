@@ -31,6 +31,7 @@ interface AppKeybindings {
 	"app.model.selectTemporary": true;
 	"app.tools.expand": true;
 	"app.tools.toggleVisibility": true;
+	"app.mouse.toggle": true;
 	"app.editor.external": true;
 	"app.message.followUp": true;
 	"app.retry": true;
@@ -129,6 +130,14 @@ export const KEYBINDINGS = {
 	"app.tools.toggleVisibility": {
 		defaultKeys: "ctrl+shift+o",
 		description: "Show or hide tool activity",
+	},
+	"app.mouse.toggle": {
+		// Mouse reporting takes drag away from the terminal, so native
+		// selection becomes shift+drag. Terminals that swallow shift+drag
+		// leave no way to copy text, hence a key that drops capture for the
+		// session without editing settings and restarting.
+		defaultKeys: "alt+s",
+		description: "Toggle mouse capture (release the mouse for text selection)",
 	},
 	"app.editor.external": {
 		defaultKeys: "ctrl+g",

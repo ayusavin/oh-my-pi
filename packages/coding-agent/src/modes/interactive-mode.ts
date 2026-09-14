@@ -925,6 +925,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	readonly #inputController: InputController;
 	readonly #selectorController: SelectorController;
 	readonly #focusController: SessionFocusController;
+	#mouseCaptureSuspended = false;
 	get viewSession(): AgentSession {
 		return this.#focusController.target ?? this.session;
 	}
@@ -950,9 +951,12 @@ export class InteractiveMode implements InteractiveModeContext {
 	 * Whether inline mouse capture is opted in. Never throws: the render hot
 	 * path reads this every frame, including in suites (or teardown races)
 	 * where the global singleton is uninitialized or the session carries it
-	 * dead — both fall back to off.
+	 * dead — both fall back to off. A session-scoped suspension
+	 * ({@link setMouseCaptureSuspended}) wins over the setting, so the mouse
+	 * can be handed back to the terminal for selection without a restart.
 	 */
 	#isMouseCaptureEnabled(): boolean {
+		if (this.#mouseCaptureSuspended) return false;
 		try {
 			if (settings.get("tui.mouse") === true) return true;
 		} catch {
@@ -963,6 +967,19 @@ export class InteractiveMode implements InteractiveModeContext {
 		} catch {
 			return false;
 		}
+	}
+
+	get mouseCaptureSuspended(): boolean {
+		return this.#mouseCaptureSuspended;
+	}
+
+	/** Returns whether capture is on afterwards, which is what the notice says. */
+	setMouseCaptureSuspended(suspended: boolean): boolean {
+		this.#mouseCaptureSuspended = suspended;
+		// The provider is polled per frame, so a render is all it takes; the
+		// escape sequences are emitted by the TUI's own transition.
+		this.ui.requestRender();
+		return this.#isMouseCaptureEnabled();
 	}
 
 	resolveViewportClickCandidates(index: number): string[] {

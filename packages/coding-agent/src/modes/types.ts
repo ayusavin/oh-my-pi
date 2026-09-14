@@ -202,6 +202,9 @@ export interface InteractiveModeContext {
 	isBashMode: boolean;
 	toolOutputExpanded: boolean;
 	hideToolActivity: boolean;
+	/** Session-scoped release of mouse capture so the terminal can select text. */
+	readonly mouseCaptureSuspended: boolean;
+	setMouseCaptureSuspended(suspended: boolean): boolean;
 	todoExpanded: boolean;
 	planModeEnabled: boolean;
 	vibeModeEnabled: boolean;

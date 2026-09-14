@@ -573,6 +573,9 @@ export class InputController {
 		for (const key of planModeKeys) {
 			this.ctx.editor.setCustomKeyHandler(key, () => void this.ctx.handlePlanModeCommand());
 		}
+		for (const key of this.ctx.keybindings.getKeys("app.mouse.toggle")) {
+			this.ctx.editor.setCustomKeyHandler(key, () => this.toggleMouseCapture());
+		}
 
 		for (const key of this.ctx.keybindings.getKeys("app.session.new")) {
 			this.ctx.editor.setCustomKeyHandler(key, () => this.ctx.handleClearCommand());
@@ -2291,6 +2294,22 @@ export class InputController {
 		}
 		this.setToolsExpanded(!this.ctx.toolOutputExpanded);
 		this.ctx.showStatus(`Tool output expansion: ${this.ctx.toolOutputExpanded ? "enabled" : "disabled"}`);
+	}
+
+	/**
+	 * Hand the mouse back to the terminal for the rest of the session, or take
+	 * it again. With reporting on, drag belongs to omp and native selection is
+	 * only reachable via shift+drag — which some terminals swallow, leaving no
+	 * way to copy a line. This releases capture without editing `tui.mouse`
+	 * and restarting; the render loop reads the state every frame.
+	 */
+	toggleMouseCapture(): void {
+		const captured = this.ctx.setMouseCaptureSuspended(!this.ctx.mouseCaptureSuspended);
+		this.ctx.showStatus(
+			captured
+				? "Mouse capture: on — click rows to expand, shift+drag to select"
+				: "Mouse capture: off — select and copy with the mouse as usual",
+		);
 	}
 
 	toggleToolActivityVisibility(): void {
