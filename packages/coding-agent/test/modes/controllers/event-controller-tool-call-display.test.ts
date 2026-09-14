@@ -124,19 +124,19 @@ describe("CompactToolCallComponent click-to-expand (C7)", () => {
 		expect(plain(component.render(120))).toBe(collapsed);
 	});
 
-	it("marks every row with what a click does: ▸ opens, ▾ closes, blank means nothing to show", () => {
+	it("marks every row with what a click does: ▸ opens, ▾ closes — a running call included", () => {
 		const component = new CompactToolCallComponent();
 		component.addCall("call-1", "bash", "Bash", { command: "echo one" }, undefined);
 		component.addCall("call-2", "bash", "Bash", { command: "echo two" }, undefined);
 		component.updateResult({ content: [{ type: "text", text: "out one" }], isError: false }, false, "call-1");
-		// call-2 never settles: its row has no card to open.
+		// call-2 never settles: its row still opens, to its arguments.
 		expect(plain(component.render(120)).startsWith("▸ ")).toBe(true);
 
 		component.getViewportClickAction()!(0);
 		const expanded = plain(component.render(120)).split("\n");
 		expect(expanded[0]!.startsWith("▾ ")).toBe(true);
 		expect(expanded[1]!.startsWith("   ▸ ")).toBe(true);
-		expect(expanded[2]!.startsWith("     ")).toBe(true); // pending sibling: no marker
+		expect(expanded[2]!.startsWith("   ▸ ")).toBe(true);
 
 		component.getViewportClickAction()!(1); // open call-1's card
 		const opened = plain(component.render(120)).split("\n");
@@ -180,16 +180,18 @@ describe("CompactToolCallComponent click-to-expand (C7)", () => {
 		expect(plain(component.render(120)).split("\n")).toHaveLength(1);
 	});
 
-	it("a row with nothing more to show is not clickable", () => {
+	it("a running call is clickable too: its card shows the arguments the row truncated", () => {
 		const pending = new CompactToolCallComponent();
-		pending.addCall("call-1", "bash", "Bash", { command: "echo running" }, undefined);
-		expect(pending.getViewportClickAction()).toBeUndefined();
-		expect(pending.getClickFocusAgentIds()).toEqual([]);
+		pending.addCall("call-1", "bash", "Bash", { command: "echo running with a very long tail of arguments" }, undefined);
+		expect(pending.getViewportClickAction()).toBeDefined();
+		expect(pending.getClickFocusAgentIds()).not.toEqual([]);
 
-		const settled = new CompactToolCallComponent();
-		settled.addCall("call-1", "bash", "Bash", { command: "echo done" }, undefined);
-		settled.updateResult({ content: [{ type: "text", text: "ok" }], isError: false }, false, "call-1");
-		expect(settled.getViewportClickAction()).toBeDefined();
+		pending.getViewportClickAction()!(0);
+		expect(plain(pending.render(120))).toContain("echo running with a very long tail of arguments");
+
+		// The result lands in the already-open card.
+		pending.updateResult({ content: [{ type: "text", text: "late output" }], isError: false }, false, "call-1");
+		expect(plain(pending.render(120))).toContain("late output");
 	});
 
 	it("clicking one subordinate call in an expanded group opens its stock full card; a second click restores the dimmed line", () => {
@@ -248,19 +250,46 @@ describe("CompactToolCallComponent click-to-expand (C7)", () => {
 		expect(new Set([...summaryIds, ...call1Ids, ...call2Ids]).size).toBe(3);
 	});
 
-	it("a still-pending sibling inside an expanded group has no click target and no hover mark", () => {
+	it("a still-pending sibling inside an expanded group opens like any other row", () => {
 		const component = new CompactToolCallComponent();
 		component.addCall("call-1", "bash", "Bash", { command: "echo one" }, undefined);
-		component.addCall("call-2", "bash", "Bash", { command: "echo two" }, undefined);
+		component.addCall("call-2", "bash", "Bash", { command: "echo two on a much longer line" }, undefined);
 		component.updateResult({ content: [{ type: "text", text: "out one" }], isError: false }, false, "call-1");
 		// call-2 never settles.
 		component.getViewportClickAction()!(0);
 		component.render(120);
 
-		expect(component.getClickFocusAgentIds(2)).toEqual([]);
-		const before = plain(component.render(120));
+		expect(component.getClickFocusAgentIds(2)).not.toEqual([]);
 		component.getViewportClickAction()!(2);
-		expect(plain(component.render(120))).toBe(before);
+		expect(plain(component.render(120))).toContain("echo two on a much longer line");
+	});
+
+	it("a group is only red when nothing in it worked: one failure among successes is not a failed run", () => {
+		const icon = (rows: string): string => rows.split("\n")[0]!.replace(/^[▸▾]\s*/, "").slice(0, 1);
+		const mixed = new CompactToolCallComponent();
+		mixed.addCall("call-1", "bash", "Bash", { command: "echo one" }, undefined);
+		mixed.addCall("call-2", "bash", "Bash", { command: "echo two" }, undefined);
+		mixed.updateResult({ content: [{ type: "text", text: "out" }], isError: false }, false, "call-1");
+		mixed.updateResult({ content: [{ type: "text", text: "boom" }], isError: true }, false, "call-2");
+
+		const allFailed = new CompactToolCallComponent();
+		allFailed.addCall("call-1", "bash", "Bash", { command: "echo one" }, undefined);
+		allFailed.addCall("call-2", "bash", "Bash", { command: "echo two" }, undefined);
+		allFailed.updateResult({ content: [{ type: "text", text: "boom" }], isError: true }, false, "call-1");
+		allFailed.updateResult({ content: [{ type: "text", text: "boom" }], isError: true }, false, "call-2");
+
+		const stillRunning = new CompactToolCallComponent();
+		stillRunning.addCall("call-1", "bash", "Bash", { command: "echo one" }, undefined);
+		stillRunning.addCall("call-2", "bash", "Bash", { command: "echo two" }, undefined);
+		stillRunning.updateResult({ content: [{ type: "text", text: "boom" }], isError: true }, false, "call-1");
+
+		const failedIcon = icon(plain(allFailed.render(120)));
+		expect(icon(plain(mixed.render(120)))).not.toBe(failedIcon);
+		expect(icon(plain(stillRunning.render(120)))).not.toBe(failedIcon);
+		expect(icon(plain(stillRunning.render(120)))).not.toBe(icon(plain(mixed.render(120))));
+		// The failure is not hidden — it is on its own row once expanded.
+		mixed.getViewportClickAction()!(0);
+		expect(plain(mixed.render(120)).split("\n")[2]).toContain(failedIcon);
 	});
 
 	it("collapsing the group (ctrl+o) while a subordinate call is open retracts its card", () => {

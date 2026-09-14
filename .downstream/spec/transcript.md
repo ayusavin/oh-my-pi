@@ -164,14 +164,17 @@ subagent: each renders with the human name of the work it carries, with the inte
 in the expanded form. `Background job completed [bash] bg_10` fails this; the same row naming the
 command or the job's own label passes.
 
-**C7. A row that has more to show is clickable.** Clicking a collapsed row expands it and clicking
-again collapses it, while the keyboard expansion (`ctrl+o`) keeps working unchanged. A row with nothing
-more to show is not clickable, and text selection must survive (`tui.mouse` puts native selection on
-shift+drag). Hovering a clickable row marks only that row, never a sibling row sharing its rendered
-block. A grouped row's own two levels each carry this independently: expanding the group keeps its
+**C7. Every row of a group is clickable.** Clicking a collapsed row expands it and clicking again
+collapses it, while the keyboard expansion (`ctrl+o`) keeps working unchanged. A call is clickable
+whether or not it has settled: its card always carries more than its row — the full arguments the row
+truncated, plus the result once there is one, which lands in the card if it is already open. Text
+selection must survive (`tui.mouse` puts native selection on shift+drag). Hovering a clickable row
+marks only that row — a band plus an underline, so the mark reads as a link rather than a selection —
+never a sibling row sharing its rendered block. A grouped row's own two levels each carry this
+independently: expanding the group keeps its
 summary row in place and lists one dimmed line per call beneath it (never replacing the summary the
 way a flat per-call list would), and clicking one call's own line — dimmed inside an expanded group, or
-a standalone row once it has settled — swaps that one line for the exact card `full` mode would have
+a standalone row — swaps that one line for the exact card `full` mode would have
 built for it (arguments plus output), reusing that card's own class rather than duplicating its
 rendering; a second click on any of that open card's own rows returns it to the one-line form. This
 two-level shape (summary kept, per-call lines dimmed, per-call click-to-open-a-full-card) is this
@@ -184,13 +187,18 @@ infer it from an undocumented surface.
 single ellipsis; the cut must not split an escape sequence or a multi-byte character.
 
 **C9. The affordance is readable without hovering.** Every row states in its own leading column what a
-click on it does: `▸` opens (a collapsed group, or a settled call whose card is closed), `▾` closes
-what is open, and a blank column means the row has nothing more to show — exactly the rows that carry
-no click target. The subordinate rows of an expanded group, and an open call's card, are indented under
+click on it does: `▸` opens (a collapsed group, or a call whose card is closed) and `▾` closes what is
+open. The subordinate rows of an expanded group, and an open call's card, are indented under
 the summary so nesting is visible in a still screenshot; an open call keeps its own header row above
 its card, so the row that closes it again is always on screen. Hover marking (C7) is an addition to
 this, never the only signal: a static transcript, a screenshot, and a scrollback copy all still say
 which rows are interactive and which of them are open.
+
+**C10. A collapsed group is red only when nothing in it worked.** The summary row carries the status
+of the run, not of its worst call: pending while any call is in flight, otherwise successful if any
+call succeeded, and failed only when every call failed. A single failure among successes must not
+paint the whole run red — the row is the only thing a reader sees while it is collapsed, and the
+failure is still on its own line once the group is expanded.
 
 ### Evidence for this contract
 

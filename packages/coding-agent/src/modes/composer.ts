@@ -494,7 +494,9 @@ export class Composer implements TerminalFrameProvider {
 				// (live card rows carry the pending-tint bg, which would paint over
 				// the band for every cell it covers), so drop nested bg opens
 				// first; their closes stay and become band resumes via bgFill.
-				return theme.bgFill("selectedBg", line.replace(NESTED_BG_OPEN_PATTERN, ""));
+				// The underline names the row as a link: the band alone reads as
+				// a selection, and a hovered row here is something to click.
+				return theme.underlineFill(theme.bgFill("selectedBg", line.replace(NESTED_BG_OPEN_PATTERN, "")));
 			}
 			return line;
 		});

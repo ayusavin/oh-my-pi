@@ -132,6 +132,7 @@ const LANG_BRAND_COLORS: Partial<Record<SymbolKey, string>> = {
 
 const BACKGROUND_RESET_PATTERN = /\x1b\[(?:0|49)m/g;
 const FOREGROUND_RESET_PATTERN = /\x1b\[(?:0|39)m/g;
+const UNDERLINE_RESET_PATTERN = /\x1b\[(?:0|24)m/g;
 
 export class Theme {
 	#fgColors: Record<ThemeColor, string>;
@@ -320,6 +321,16 @@ export class Theme {
 		const ansi = this.#bgColors[color];
 		if (!ansi) throw new Error(`Unknown theme background color: ${color}`);
 		return `${ansi}${text.replace(BACKGROUND_RESET_PATTERN, `$&${ansi}`)}\x1b[49m`;
+	}
+
+	/**
+	 * Underline a composed row so the rule survives nested resets, the way
+	 * {@link bgFill} keeps a background fill alive. Hover affordance on a
+	 * clickable transcript row: a plain `underline()` wrapper stops at the
+	 * first `\x1b[0m` a styled row already contains.
+	 */
+	underlineFill(text: string): string {
+		return `\x1b[4m${text.replace(UNDERLINE_RESET_PATTERN, "$&\x1b[4m")}\x1b[24m`;
 	}
 
 	/**

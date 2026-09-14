@@ -174,11 +174,10 @@ function firstErrorLine(text: string | undefined): string | undefined {
  * Leading column that says what a click on this row does, so the affordance
  * is readable from a still screenshot instead of discovered by trial: `▸`
  * opens (a collapsed group, or a call whose full card is closed), `▾` closes
- * what is currently open, and a blank column means the row has nothing more
- * to show — exactly the rows that carry no click target.
+ * what is currently open. Every row of a group carries one: each call is
+ * clickable whether or not it has settled.
  */
-function rowMarker(state: "open" | "closed" | "inert"): string {
-	if (state === "inert") return " ";
+function rowMarker(state: "open" | "closed"): string {
 	return theme.fg("dim", state === "open" ? "▾" : "▸");
 }
 
@@ -262,19 +261,13 @@ function renderGroupLine(entries: readonly CompactCallEntry[], expanded: boolean
 		.map(([toolName, { label, count }]) => groupPhrase(toolName, label, count))
 		.join(", ");
 	const pending = entries.some(entry => entry.outcome === "pending");
-	const failed = entries.some(entry => entry.outcome === "error");
-	const status: ToolUIStatus = pending ? "pending" : failed ? "error" : "done";
+	const succeeded = entries.some(entry => entry.outcome === "success");
+	// A run is only red when nothing in it worked. One failed call among
+	// successes reads as "the whole group failed", which is wrong and is the
+	// single most misleading thing a collapsed row can say; the failure is
+	// still visible on its own line once the row is expanded.
+	const status: ToolUIStatus = pending ? "pending" : succeeded ? "done" : "error";
 	return `${rowMarker(expanded ? "open" : "closed")} ${renderStatusLine({ icon: status, title, titleColor: "toolTitle" }, theme)}`;
-}
-
-/** C7's per-row clickability gate for one call: any settled call, because the
- * card always shows more than the row — full arguments instead of the row's
- * truncated `Tool(arg…)`, plus the result (a failure's error text, or an
- * explicit empty output: `find` with no matches still has a command to read).
- * Shared by three call sites (`#clickable()`, and both branches of
- * `#rowTarget`) that must agree on exactly the same gate. */
-function entryClickable(entry: CompactCallEntry): boolean {
-	return entry.rawResult !== undefined;
 }
 
 /**
@@ -472,13 +465,13 @@ export class CompactToolCallComponent extends Container implements ToolExecution
 		super.invalidate();
 	}
 
-	/** C7's clickability predicate: a grouped row always has its per-call
-	 * lines behind the collapsed summary; a single-call row is clickable only
-	 * once it has settled with more to show than its own line. */
+	/** C7's clickability predicate: every call is clickable, settled or not.
+	 * Its card always shows more than the row — full arguments instead of the
+	 * row's truncated `Tool(arg…)`, plus the result once there is one; a call
+	 * opened while still running fills in its result in place, because
+	 * {@link updateResult} forwards to the open card. */
 	#clickable(): boolean {
-		if (this.#entries.size > 1) return true;
-		const [entry] = this.#entries.values();
-		return entry !== undefined && entryClickable(entry);
+		return this.#entries.size > 0;
 	}
 
 	/**
@@ -486,8 +479,8 @@ export class CompactToolCallComponent extends Container implements ToolExecution
 	 * component's own last rendered output (0-indexed from its first row):
 	 * the group's own summary line, a still-dimmed subordinate call line, or
 	 * one of the currently open call's own card rows. `undefined` when that
-	 * row carries no click target at all (a pending row with nothing more to
-	 * show). Shared by {@link getClickFocusAgentIds} and
+	 * row carries no click target at all (a collapsed group's hidden rows).
+	 * Shared by {@link getClickFocusAgentIds} and
 	 * {@link getViewportClickAction} so hover and click always agree on
 	 * exactly which row a given index means.
 	 */
@@ -501,7 +494,7 @@ export class CompactToolCallComponent extends Container implements ToolExecution
 				// any of that card's own rows returns it to the one-line form".
 				return { id: entry.clickId, onClick: () => this.#closeOpenCard() };
 			}
-			if (!entryClickable(entry)) return undefined;
+
 			return { id: entry.clickId, onClick: () => this.#openCall(entry.toolCallId) };
 		}
 		if (local <= 0) return { id: this.#clickId, onClick: () => this.toggleExpanded() };
@@ -514,7 +507,6 @@ export class CompactToolCallComponent extends Container implements ToolExecution
 			const span = isOpen ? 1 + Math.max(0, this.#lastCardRows) : 1;
 			if (local < row + span) {
 				if (isOpen) return { id: entry.clickId, onClick: () => this.#closeOpenCard() };
-				if (!entryClickable(entry)) return undefined;
 				return { id: entry.clickId, onClick: () => this.#openCall(entry.toolCallId) };
 			}
 			row += span;
@@ -549,15 +541,17 @@ export class CompactToolCallComponent extends Container implements ToolExecution
 
 	/**
 	 * Embed the stock `ToolExecutionComponent` card `full` mode would have
-	 * built for this settled call (req 4), replacing its own one-line row.
-	 * Reuses the class rather than duplicating its rendering; a no-op UI
-	 * stands in for the live composer (`EMBEDDED_CARD_UI`) since opening
-	 * flows entirely through a click, and `input-controller.ts`'s own
-	 * handler already requests a render immediately after invoking it.
+	 * built for this call (req 4), replacing its own one-line row. Reuses the
+	 * class rather than duplicating its rendering; a no-op UI stands in for
+	 * the live composer (`EMBEDDED_CARD_UI`) since opening flows entirely
+	 * through a click, and `input-controller.ts`'s own handler already
+	 * requests a render immediately after invoking it. A call still in flight
+	 * opens to its arguments; its result lands via {@link updateResult},
+	 * which forwards to the open card.
 	 */
 	#openCall(toolCallId: string): void {
 		const entry = this.#entries.get(toolCallId);
-		if (!entry || !entry.rawResult || this.#openCallId === toolCallId) return;
+		if (!entry || this.#openCallId === toolCallId) return;
 		this.#closeOpenCardInternal();
 		const card = new ToolExecutionComponent(
 			entry.toolName,
@@ -571,7 +565,7 @@ export class CompactToolCallComponent extends Container implements ToolExecution
 		card.setExpanded(true);
 		card.setArgsComplete(entry.toolCallId);
 		card.setExecutionStarted(entry.toolCallId);
-		card.updateResult(entry.rawResult, false, entry.toolCallId);
+		if (entry.rawResult) card.updateResult(entry.rawResult, false, entry.toolCallId);
 		this.#openCallId = toolCallId;
 		this.#openCard = card;
 		this.#blockVersion++;
@@ -670,7 +664,7 @@ export class CompactToolCallComponent extends Container implements ToolExecution
 				let sink = beforeLines;
 				for (const entry of entries) {
 					const isOpen = entry.toolCallId === this.#openCallId;
-					const marker = rowMarker(isOpen ? "open" : entryClickable(entry) ? "closed" : "inert");
+					const marker = rowMarker(isOpen ? "open" : "closed");
 					// The open call keeps its own header above the card, so the row
 					// that closes it again is on screen and marked `▾`.
 					sink.push(dimLine(renderCallLine(entry, `${NEST_INDENT}${marker} `)));
@@ -682,7 +676,7 @@ export class CompactToolCallComponent extends Container implements ToolExecution
 			if (!entry) beforeLines = [];
 			else {
 				const isOpen = this.#openCallId === entry.toolCallId;
-				const marker = rowMarker(isOpen ? "open" : entryClickable(entry) ? "closed" : "inert");
+				const marker = rowMarker(isOpen ? "open" : "closed");
 				beforeLines = [renderCallLine(entry, `${marker} `)];
 			}
 		}

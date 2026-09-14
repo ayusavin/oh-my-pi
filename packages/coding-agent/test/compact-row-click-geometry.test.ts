@@ -105,6 +105,33 @@ describe("compact row click geometry", () => {
 		expect(glob.render(120)).toHaveLength(1);
 	});
 
+	it("underlines the hovered clickable row and drops the rule when the pointer leaves", async () => {
+		await mode.init({ suppressWelcomeIntro: true });
+		void mode.getUserInput();
+		await term.waitForRender();
+
+		addGroup("bash", "Bash", [{ command: "echo one" }, { command: "echo two" }]);
+		mode.ui.requestRender();
+		await term.waitForRender(() => plainRows(term.getViewport()).some(row => row.includes("2 shell commands")));
+
+		const screenRow = plainRows(term.getViewport()).findIndex(row => row.includes("2 shell commands"));
+		expect(screenRow).toBeGreaterThanOrEqual(0);
+		expect(term.getViewportRowUnderlineColumns(screenRow)).toHaveLength(0);
+
+		// Motion with no button held is what a hover sends.
+		term.sendInput(`\x1b[<35;2;${screenRow + 1}M`);
+		await term.waitForRender(() => term.getViewportRowUnderlineColumns(screenRow).length > 0);
+		const underlined = term.getViewportRowUnderlineColumns(screenRow);
+		// The rule spans the band, not just the plain text before the first reset.
+		expect(underlined.length).toBeGreaterThan("▸ • 2 shell commands".length);
+
+		// Off the row: the affordance must not stick.
+		const emptyRow = plainRows(term.getViewport()).findIndex((row, index) => index > screenRow && row.length === 0);
+		term.sendInput(`\x1b[<35;2;${(emptyRow >= 0 ? emptyRow : screenRow + 1) + 1}M`);
+		await term.waitForRender(() => term.getViewportRowUnderlineColumns(screenRow).length === 0);
+		expect(term.getViewportRowUnderlineColumns(screenRow)).toHaveLength(0);
+	});
+
 	it("opens the clicked call's card, then closes it on a second click of its own row", async () => {
 		await mode.init({ suppressWelcomeIntro: true });
 		void mode.getUserInput();
