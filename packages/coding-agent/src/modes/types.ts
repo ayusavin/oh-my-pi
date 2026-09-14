@@ -162,6 +162,8 @@ export interface InteractiveModeContext {
 	 * (e.g. a compact tool row's own expand/collapse). Tried before
 	 * `resolveViewportClickCandidates`-based focus routing. */
 	resolveViewportClickAction(index: number): ((local: number) => void) | undefined;
+	/** Click action for an opaque target that still belongs to visible native scrollback. */
+	resolveHistoryClickAction(target: unknown): (() => void) | undefined;
 	/** Flip the pinned jump list between its collapsed few and the full list. */
 	togglePinnedHudExpanded(): void;
 	/** Rebuild the pinned jump list for a `display.pinnedAgents` change. */

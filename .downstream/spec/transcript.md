@@ -207,6 +207,19 @@ keybinding (`app.mouse.toggle`, default `alt+s`) therefore releases capture and 
 the release wins over `tui.mouse`. Proof is the pty byte stream: the terminal must see
 `\x1b[?1003l\x1b[?1000l` on release and `\x1b[?1000h\x1b[?1003h` on retake.
 
+**C12. Restored rows keep their interactivity; native scrollback does not.** A compact
+tool-group row that is already in normal-buffer history — visible after a `--resume` because
+the application replays the restored transcript into normal-buffer history — stays a
+hover-and-click target for as long as it is physically on screen: hovering it underlines and backgrounds the full terminal-width row. The
+underlying native scrollback is immutable, so a click does not edit it in place; instead it
+raises a mutable copy of that semantic row at the live transcript bottom, rendered from the
+same emitted presentation the row carried when it first printed. A target that leaves the
+physical ledger — scrolled off the visible area or superseded — fails closed and is no longer
+clickable. Proof, live pty run 2026-09-14: after `--resume`, a compact tool-group row already
+in normal-buffer history was targetable while physically visible; hover underlined and
+backgrounded the full-width row; a click raised the mutable copy at the live bottom using the
+row's own emitted presentation even after `ctrl+o` had changed the current component state.
+
 ### Evidence for this contract
 
 - Row shape and argument echo, Claude Code 2.1.150, full captured session:
@@ -253,6 +266,12 @@ the release wins over `tui.mouse`. Proof is the pty byte stream: the terminal mu
   `packages/coding-agent/src/modes/components/tool-call-compact.ts` (`CompactToolCallComponent`) and
   `packages/coding-agent/src/modes/composer.ts` (row-local hover/click routing through
   `getClickFocusAgentIds`/`getViewportClickAction`).
+- **2026-09-14, this fork's own local proof, not Claude Code evidence** — after `--resume`, a
+  compact tool-group row already in normal-buffer history stayed a click target while physically
+  visible: hover marked the full terminal-width row, and a click raised a mutable copy of it at
+  the live transcript bottom using the row's emitted presentation, even after `ctrl+o` had
+  changed current component state. That is
+  C12; the native scrollback itself was never edited in place.
 
 ## Build notes, from the retired `tools/omp-local/` build
 

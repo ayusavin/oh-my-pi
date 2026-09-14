@@ -137,6 +137,16 @@ export interface HistoryBatch {
 	 * one synchronous terminal write.
 	 */
 	readonly kind?: "append" | "replay";
+	/** Opaque per-row interaction targets, index-aligned with {@link rows}. */
+	readonly targets?: readonly unknown[];
+	/** Pre-styled hover rows, index-aligned with {@link rows} and {@link targets}. */
+	readonly hoverRows?: readonly string[];
+}
+
+interface HistoryLedgerEntry {
+	target: unknown;
+	normal: string;
+	hover: string;
 }
 
 /** One history append or complete replay plus the mutable viewport for a terminal frame. */
@@ -149,6 +159,8 @@ export interface TerminalFramePlan {
 export interface TerminalFrameProvider {
 	renderFrame(viewport: ViewportSize): TerminalFramePlan;
 	acknowledgeHistory(id: number): void;
+	/** Invalidate targets no longer visible in the normal buffer. */
+	invalidateHistoryTargets?(targets: readonly unknown[]): void;
 	/** Full semantic viewport used only on the transient resize buffer. */
 	renderResizeFrame?(viewport: ViewportSize): readonly string[];
 	/** Re-offer finalized history after a display reset or resize replay. */
@@ -668,6 +680,9 @@ export class TUI extends Container {
 	// Screen row where the provider's mutable viewport begins (0-based); rows
 	// above it hold history still visible on the physical screen.
 	#providerViewportTop = 0;
+	/** Scrollback interaction rows by physical screen row. */
+	#historyLedger: Array<HistoryLedgerEntry | undefined> = [];
+	#hoveredHistoryTarget: unknown | undefined;
 	// Net composer-space offset of the published hit-test origin behind the
 	// painted top, from the last paint: replay-replaced rows minus viewport
 	// rows the paint prepended for a short viewport. Negative while prepended
@@ -815,6 +830,8 @@ export class TUI extends Container {
 	#ghosttyInitialImageDelayTimer: RenderTimer | undefined;
 	#ghosttyImageReadyAtMs = 0;
 	#clearScrollbackOnNextRender = false;
+	/** A resize invalidated a painted history hover; an exact reset clears its physical band. */
+	#resizeHistoryHoverResetPending = false;
 	// Consumed by the next frame: a user-driven redraw gesture (resetDisplay,
 	// requestRender(true)) that must rewrite the viewport even when the diff
 	// believes nothing changed.
@@ -1122,6 +1139,101 @@ export class TUI extends Container {
 		return { top: this.#providerViewportTop - this.#providerViewportPadTop, length: this.#providerWindow.length };
 	}
 
+	/** Opaque target of a visible history row, never a mutable viewport row. */
+	historyRowTarget(screenRow: number): unknown | undefined {
+		if (
+			!Number.isInteger(screenRow) ||
+			screenRow < 0 ||
+			screenRow >= this.#providerViewportTop ||
+			screenRow >= this.terminal.rows ||
+			this.#altActive ||
+			this.#resizeAltActive ||
+			this.#resizeProbe !== undefined ||
+			this.#resizeInPlaceActive ||
+			this.#ghosttyInitialImageDelayTimer !== undefined
+		) {
+			return undefined;
+		}
+		return this.#historyLedger[screenRow]?.target;
+	}
+
+	/**
+	 * Repaint only the visible scrollback row that lost hover and the one that
+	 * gained it. Normal-buffer history is immutable once it scrolls away, so
+	 * this only operates on entries still owned by the physical screen ledger.
+	 */
+	setHistoryHoverTarget(target: unknown | undefined): void {
+		const previous = this.#historyLedgerRow(this.#hoveredHistoryTarget);
+		const next = this.#historyLedgerRow(target);
+		if (previous?.entry.target === next?.entry.target) return;
+		this.#hoveredHistoryTarget = next?.entry.target;
+		const rewrites: Array<{ row: number; line: string }> = [];
+		if (previous) rewrites.push({ row: previous.row, line: previous.entry.normal });
+		if (next) rewrites.push({ row: next.row, line: next.entry.hover });
+		this.#rewriteHistoryRows(rewrites);
+	}
+
+	#historyLedgerRow(target: unknown | undefined): { row: number; entry: HistoryLedgerEntry } | undefined {
+		if (target === undefined) return undefined;
+		const limit = Math.min(this.#providerViewportTop, this.terminal.rows, this.#historyLedger.length);
+		for (let row = 0; row < limit; row++) {
+			const entry = this.#historyLedger[row];
+			if (entry?.target === target) return { row, entry };
+		}
+		return undefined;
+	}
+
+	#rewriteHistoryRows(rows: readonly { row: number; line: string }[]): void {
+		if (rows.length === 0) return;
+		const width = this.terminal.columns;
+		let buffer = `\x1b7${this.#paintBeginSequence}`;
+		for (const { row, line } of rows) {
+			buffer += `\x1b[${row + 1};1H${this.#lineRewriteSequence(line, width, row)}`;
+		}
+		buffer += `${this.#paintEndSequence}\x1b8${this.#hardwareCursorState?.visible ? "\x1b[?25h" : HIDE_CURSOR}`;
+		this.terminal.write(buffer);
+	}
+
+	#clearHistoryLedger(provider: TerminalFrameProvider | undefined): boolean {
+		const hadHoveredHistory = this.#hoveredHistoryTarget !== undefined;
+		const targets = this.#historyLedger.flatMap(entry => (entry ? [entry.target] : []));
+		this.#historyLedger = [];
+		this.#hoveredHistoryTarget = undefined;
+		if (targets.length > 0) provider?.invalidateHistoryTargets?.(targets);
+		return hadHoveredHistory;
+	}
+
+	#noteHistoryLedger(
+		targets: readonly unknown[] | undefined,
+		normalRows: readonly string[],
+		hoverRows: readonly string[],
+		startTop: number,
+		pushed: number,
+		mutableTop: number,
+		height: number,
+		provider: TerminalFrameProvider | undefined,
+	): void {
+		const priorTargets = new Set(this.#historyLedger.flatMap(entry => (entry ? [entry.target] : [])));
+		const acceptsTargets =
+			targets !== undefined && targets.length === normalRows.length && hoverRows.length === normalRows.length;
+		for (let index = 0; index < normalRows.length; index++) {
+			const target = acceptsTargets ? targets[index] : undefined;
+			this.#historyLedger[startTop + index] =
+				target === undefined ? undefined : { target, normal: normalRows[index]!, hover: hoverRows[index]! };
+		}
+		if (pushed > 0) this.#historyLedger.splice(0, pushed);
+		this.#historyLedger.length = Math.min(this.#historyLedger.length, height);
+		for (let row = Math.max(0, mutableTop); row < this.#historyLedger.length; row++) {
+			this.#historyLedger[row] = undefined;
+		}
+		const currentTargets = new Set(this.#historyLedger.flatMap(entry => (entry ? [entry.target] : [])));
+		const invalidated = [...priorTargets].filter(target => !currentTargets.has(target));
+		if (invalidated.length > 0) provider?.invalidateHistoryTargets?.(invalidated);
+		if (this.#hoveredHistoryTarget !== undefined && !currentTargets.has(this.#hoveredHistoryTarget)) {
+			this.#hoveredHistoryTarget = undefined;
+		}
+	}
+
 	/**
 	 * Probe for opt-in normal-buffer click capture. The provider is read every
 	 * frame; while it returns true (and no fullscreen overlay owns the
@@ -1205,6 +1317,7 @@ export class TUI extends Container {
 		this.terminal.start(
 			data => this.#handleInput(data),
 			() => {
+				this.#resizeHistoryHoverResetPending ||= this.#clearHistoryLedger(this.#frameProvider);
 				if (this.#resizeProbe) {
 					// Warp echoes a height-only ±1 SIGWINCH on CSI ?1049l. The echo
 					// must not restart the alt borrow (that is the flicker loop),
@@ -2550,25 +2663,26 @@ export class TUI extends Container {
 	 */
 	#prepareResizeReplay(width: number, height: number): void {
 		const size = `${width}x${height}`;
+		const needsExactHistoryReset = this.#resizeHistoryHoverResetPending;
 		if (
 			!this.#hasEverRendered ||
-			(this.#previousWidth === width && this.#previousHeight === height) ||
-			this.#resizeReplaySize === size ||
-			this.#resizeScrollbackMode === "preserve" ||
-			// In-place resizes (Warp) repaint the settled viewport once the drag
-			// goes quiet: no alt borrow, and no ED3 rewrap or history replay, so a
-			// drag can neither loop on its own echo nor flash destructive repaints.
-			this.#resizeRepaintsInPlace()
+			(!needsExactHistoryReset &&
+				((this.#previousWidth === width && this.#previousHeight === height) || this.#resizeReplaySize === size))
 		) {
 			return;
 		}
 		const provider = this.#frameProvider;
 		if (!provider?.beginHistoryReplay) return;
 		this.#resizeReplaySize = size;
+		if (needsExactHistoryReset) {
+			this.#prepareForcedRender(true);
+			return;
+		}
 		if (this.#clearScrollbackOnNextRender) {
 			this.#forceViewportRepaintOnNextRender = true;
 			return;
 		}
+		if (this.#resizeScrollbackMode === "preserve" || this.#resizeRepaintsInPlace()) return;
 		if (this.#resizeScrollbackMode === "rebuild") {
 			this.#prepareForcedRender(true);
 			return;
@@ -2640,6 +2754,15 @@ export class TUI extends Container {
 		if (offered !== undefined && offered.id <= this.#acceptedHistoryBatchId) provider?.acknowledgeHistory(offered.id);
 
 		let historyRows = history?.rows ?? [];
+		let historyTargets =
+			history?.targets !== undefined && history.targets.length === historyRows.length ? history.targets : undefined;
+		let historyHoverRows =
+			historyTargets !== undefined && history?.hoverRows?.length === historyRows.length
+				? history.hoverRows
+				: undefined;
+		let replayHistoryRows: readonly string[] = [];
+		let replayHistoryTargets: readonly unknown[] | undefined;
+		let replayHistoryHoverRows: readonly string[] | undefined;
 		let replayViewportRows = 0;
 		let replayPrependedBlanks = 0;
 		if (history?.kind === "replay") {
@@ -2653,20 +2776,41 @@ export class TUI extends Container {
 			}
 			const moved = Math.min(historyRows.length, leadingBlankRows);
 			if (moved > 0) {
-				viewport = [...historyRows.slice(historyRows.length - moved), ...viewport.slice(moved)];
-				historyRows = historyRows.slice(0, historyRows.length - moved);
+				const split = historyRows.length - moved;
+				replayHistoryRows = historyRows.slice(split);
+				replayHistoryTargets = historyTargets?.slice(split);
+				replayHistoryHoverRows = historyHoverRows?.slice(split);
+				viewport = [...replayHistoryRows, ...viewport.slice(moved)];
+				historyRows = historyRows.slice(0, split);
+				historyTargets = historyTargets?.slice(0, split);
+				historyHoverRows = historyHoverRows?.slice(0, split);
 				replayViewportRows = moved;
 			}
 		}
 		const markers = this.#extractCursorMarkers(viewport);
 		const prepared = this.#prepareLinesArray(viewport, width);
 		const preparedHistory = this.#prepareLinesArray(historyRows, width);
+		const preparedHistoryHover =
+			historyHoverRows === undefined ? preparedHistory : this.#prepareLinesArray(historyHoverRows, width);
+		const preparedReplayHistory =
+			replayHistoryRows.length === 0 ? [] : this.#prepareLinesArray(replayHistoryRows, width);
+		const preparedReplayHistoryHover =
+			replayHistoryHoverRows === undefined
+				? preparedReplayHistory
+				: this.#prepareLinesArray(replayHistoryHoverRows, width);
+		const ledgerRows = [...preparedHistory, ...preparedReplayHistory];
+		const ledgerHoverRows = [...preparedHistoryHover, ...preparedReplayHistoryHover];
+		const ledgerTargets =
+			historyTargets === undefined || (replayHistoryRows.length > 0 && replayHistoryTargets === undefined)
+				? undefined
+				: [...historyTargets, ...(replayHistoryTargets ?? [])];
 		const rows = prepared.length;
-		// Destructive reset (session replace, /tree, explicit clear, or a settled
-		// resize in rebuild mode): erase native history and the viewport,
-		// then repaint from row zero.
+		// Destructive reset (session replace, /tree, explicit clear, a settled
+		// rebuild resize, or an active history hover needing exact normalization):
+		// erase native history and the viewport, then repaint from row zero.
 		const destructiveReset = this.#clearScrollbackOnNextRender;
 		if (destructiveReset) {
+			this.#clearHistoryLedger(provider);
 			this.#providerViewportTop = 0;
 			this.#providerWindow = [];
 		}
@@ -2707,6 +2851,7 @@ export class TUI extends Container {
 			!this.#forceViewportRepaintOnNextRender &&
 			!destructiveReset &&
 			this.#providerWindow.length > 0;
+		let pushed = 0;
 		if (diffable) {
 			for (let index = 0; index < rows; index++) {
 				if (this.#providerWindow[index] === prepared[index]) continue;
@@ -2728,7 +2873,7 @@ export class TUI extends Container {
 			// old viewport are committed history (correct to push), but old live
 			// viewport rows are not — erase them first so a scroll can only push
 			// committed rows and blanks, never an unfinished frame.
-			const pushed = Math.max(0, startTop + preparedHistory.length + rows - height);
+			pushed = Math.max(0, startTop + preparedHistory.length + rows - height);
 			if (pushed > this.#providerViewportTop && this.#providerWindow.length > 0) {
 				buffer += this.#eraseBelowRow(this.#providerViewportTop, height);
 			}
@@ -2779,6 +2924,18 @@ export class TUI extends Container {
 		}
 		buffer += this.#paintEndSequence;
 		this.terminal.write(buffer);
+		if (!diffable) {
+			this.#noteHistoryLedger(
+				ledgerTargets,
+				ledgerRows,
+				ledgerHoverRows,
+				startTop,
+				pushed,
+				mutableTop,
+				height,
+				provider,
+			);
+		}
 		this.#debugPaint = {
 			lines: prepared,
 			windowTop: this.#debugNextWindowTop,
@@ -2801,6 +2958,7 @@ export class TUI extends Container {
 		this.#resizeBurstLastHeight = undefined;
 		this.#resizeBurstPull = 0;
 		this.#previousFrameLength = mutablePrepared.length;
+		if (destructiveReset) this.#resizeHistoryHoverResetPending = false;
 		this.#clearScrollbackOnNextRender = false;
 		this.#forceViewportRepaintOnNextRender = false;
 		this.#hasEverRendered = true;
@@ -2850,6 +3008,9 @@ export class TUI extends Container {
 				: wantAlt && topOverlay.options?.mouseTracking !== false
 					? "full"
 					: "off";
+		if (wantMouse !== "inline" && !this.#altActive && this.#hoveredHistoryTarget !== undefined) {
+			this.setHistoryHoverTarget(undefined);
+		}
 		if (wantAlt && !this.#altActive) {
 			// Enhanced keyboard modes can be buffer-local: re-push the active
 			// modified-key reporting sequence on the freshly entered alternate

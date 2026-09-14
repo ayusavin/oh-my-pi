@@ -54,7 +54,16 @@ describe("compact row click geometry", () => {
 			modelRegistry,
 		});
 		term = new VirtualTerminal(120, 32);
-		mode = new InteractiveMode(session, "test", undefined, () => {}, undefined, undefined, undefined, new Composer({ terminal: term }));
+		mode = new InteractiveMode(
+			session,
+			"test",
+			undefined,
+			() => {},
+			undefined,
+			undefined,
+			undefined,
+			new Composer({ terminal: term }),
+		);
 	});
 
 	afterEach(async () => {
@@ -66,13 +75,25 @@ describe("compact row click geometry", () => {
 	});
 
 	/** A settled two-call group of one tool, mounted straight into the transcript. */
-	function addGroup(tool: string, label: string, args: [Record<string, unknown>, Record<string, unknown>]): CompactToolCallComponent {
+	function addGroup(
+		tool: string,
+		label: string,
+		args: [Record<string, unknown>, Record<string, unknown>],
+	): CompactToolCallComponent {
 		const group = new CompactToolCallComponent();
 		const prefix = `${tool}-${mode.chatContainer.children.length}`;
 		group.addCall(`${prefix}-1`, tool, label, args[0], undefined);
 		group.addCall(`${prefix}-2`, tool, label, args[1], undefined);
-		group.updateResult({ content: [{ type: "text", text: `${tool} out one` }], isError: false }, false, `${prefix}-1`);
-		group.updateResult({ content: [{ type: "text", text: `${tool} out two` }], isError: false }, false, `${prefix}-2`);
+		group.updateResult(
+			{ content: [{ type: "text", text: `${tool} out one` }], isError: false },
+			false,
+			`${prefix}-1`,
+		);
+		group.updateResult(
+			{ content: [{ type: "text", text: `${tool} out two` }], isError: false },
+			false,
+			`${prefix}-2`,
+		);
 		group.seal();
 		mode.chatContainer.addChild(group);
 		return group;
@@ -189,7 +210,16 @@ describe("compact row click geometry", () => {
 
 	it("shows the expanded calls of a running group even when the live tail is short of rows", async () => {
 		term = new VirtualTerminal(120, 10);
-		mode = new InteractiveMode(session, "test", undefined, () => {}, undefined, undefined, undefined, new Composer({ terminal: term }));
+		mode = new InteractiveMode(
+			session,
+			"test",
+			undefined,
+			() => {},
+			undefined,
+			undefined,
+			undefined,
+			new Composer({ terminal: term }),
+		);
 		await mode.init({ suppressWelcomeIntro: true });
 		void mode.getUserInput();
 		await term.waitForRender();
@@ -259,7 +289,16 @@ describe("compact row click geometry", () => {
 
 	it("opens a clicked group even when a tall todo HUD squeezes the transcript to one row", async () => {
 		term = new VirtualTerminal(120, 16);
-		mode = new InteractiveMode(session, "test", undefined, () => {}, undefined, undefined, undefined, new Composer({ terminal: term }));
+		mode = new InteractiveMode(
+			session,
+			"test",
+			undefined,
+			() => {},
+			undefined,
+			undefined,
+			undefined,
+			new Composer({ terminal: term }),
+		);
 		await mode.init({ suppressWelcomeIntro: true });
 		void mode.getUserInput();
 		await term.waitForRender();
@@ -274,7 +313,9 @@ describe("compact row click geometry", () => {
 		mode.chatContainer.addChild(group);
 		// The HUD the user actually had on screen: a multi-line todo list under
 		// the transcript, which eats the rows the transcript would have used.
-		mode.todoContainer.addChild(new Text(["TODO", ...Array.from({ length: 9 }, (_, i) => `  item ${i}`)].join("\n"), 1, 0));
+		mode.todoContainer.addChild(
+			new Text(["TODO", ...Array.from({ length: 9 }, (_, i) => `  item ${i}`)].join("\n"), 1, 0),
+		);
 		mode.ui.requestRender();
 		await term.waitForRender(() => plainRows(term.getViewport()).some(row => row.includes("7 shell commands")));
 
@@ -286,34 +327,226 @@ describe("compact row click geometry", () => {
 		expect(plainRows(term.getViewport()).join("\n")).toContain("echo h-6");
 	});
 
-	it("offers no click target for rows that already went to native scrollback", async () => {
-		term = new VirtualTerminal(120, 14);
-		mode = new InteractiveMode(session, "test", undefined, () => {}, undefined, undefined, undefined, new Composer({ terminal: term }));
+	it("reuses one semantic raised copy for a restored compact row", async () => {
+		term = new VirtualTerminal(120, 32);
+		mode = new InteractiveMode(
+			session,
+			"test",
+			undefined,
+			() => {},
+			undefined,
+			undefined,
+			undefined,
+			new Composer({ terminal: term }),
+		);
 		await mode.init({ suppressWelcomeIntro: true });
 		void mode.getUserInput();
 		await term.waitForRender();
 
 		const group = new CompactToolCallComponent();
-		for (let index = 0; index < 24; index++) {
+		for (let index = 0; index < 48; index++) {
 			group.addCall(`call-${index}`, "bash", "Bash", { command: `echo cmd-${index}` }, undefined);
-			group.updateResult({ content: [{ type: "text", text: `out-${index}` }], isError: false }, false, `call-${index}`);
+			group.updateResult(
+				{ content: [{ type: "text", text: `out-${index}` }], isError: false },
+				false,
+				`call-${index}`,
+			);
 		}
 		group.seal();
 		group.setExpanded(true);
 		mode.chatContainer.addChild(group);
 		mode.ui.requestRender();
-		await term.waitForRender(() => plainRows(term.getViewport()).some(row => row.includes("echo cmd-23")));
+		await term.waitForRender(() => {
+			const viewport = plainRows(term.getViewport());
+			const mutableTop = mode.ui.getMutableViewport().top;
+			return viewport.some(
+				(row, index) =>
+					index < mutableTop && row.includes("echo cmd-") && mode.ui.historyRowTarget(index) !== undefined,
+			);
+		});
 
-		// Retirement printed the block's rows into the terminal's own scrollback:
-		// they sit above the mutable window, where nothing can repaint them.
 		const rows = plainRows(term.getViewport());
-		const targetRow = rows.findIndex(row => row.includes("echo cmd-23"));
+		const mutableTop = mode.ui.getMutableViewport().top;
+		const targetRow = rows.findLastIndex(
+			(row, index) =>
+				index < mutableTop && row.includes("echo cmd-") && mode.ui.historyRowTarget(index) !== undefined,
+		);
 		expect(targetRow).toBeGreaterThanOrEqual(0);
-		expect(targetRow).toBeLessThan(mode.ui.getMutableViewport().top);
+		const target = mode.ui.historyRowTarget(targetRow);
+		expect(target).toBeDefined();
+		const command = rows[targetRow]!.match(/echo cmd-(\d+)/)?.[1];
+		expect(command).toBeDefined();
+		expect(term.getViewportRowUnderlineColumns(targetRow)).toHaveLength(0);
+		term.sendInput(`\x1b[<35;2;${targetRow + 1}M`);
+		await term.waitForRender(() => term.getViewportRowUnderlineColumns(targetRow).length > 0);
 
-		term.sendInput(`\x1b[<0;1;${targetRow + 1}M`);
+		term.resize(119, 32);
+		await term.waitForRender(() => {
+			const resizedRows = plainRows(term.getViewport());
+			const resizedMutableTop = mode.ui.getMutableViewport().top;
+			return resizedRows.some(
+				(row, index) =>
+					index < resizedMutableTop &&
+					row.includes(`echo cmd-${command}`) &&
+					mode.ui.historyRowTarget(index) === target,
+			);
+		});
+		const resizedRows = plainRows(term.getViewport());
+		const resizedMutableTop = mode.ui.getMutableViewport().top;
+		const resizedTargetRow = resizedRows.findLastIndex(
+			(row, index) =>
+				index < resizedMutableTop &&
+				row.includes(`echo cmd-${command}`) &&
+				mode.ui.historyRowTarget(index) === target,
+		);
+		expect(resizedTargetRow).toBeGreaterThanOrEqual(0);
+		const resizedTarget = mode.ui.historyRowTarget(resizedTargetRow);
+		expect(resizedTarget).toBe(target);
+		expect(term.getViewportRowUnderlineColumns(resizedTargetRow)).toHaveLength(0);
+		term.sendInput(`\x1b[<35;2;${resizedTargetRow + 1}M`);
+		await term.waitForRender(() => term.getViewportRowUnderlineColumns(resizedTargetRow).length > 0);
+
+		// The immutable row still reads expanded even after current component
+		// state changes; its captured semantic target must follow what was shown.
+		group.setExpanded(false);
+		expect(plainRows(group.render(120)).join("\n")).not.toContain(`echo cmd-${command}`);
+
+		const childCount = mode.chatContainer.children.length;
+		term.sendInput(`\x1b[<0;1;${resizedTargetRow + 1}M`);
+		expect(mode.chatContainer.children).toHaveLength(childCount + 1);
+		const raised = mode.chatContainer.children.at(-1);
+		expect(raised).toBeInstanceOf(CompactToolCallComponent);
+		expect(mode.chatContainer.ownsMutableHistoryComponent(raised!)).toBe(true);
+		expect(plainRows(raised!.render(120)).join("\n")).toContain(`out-${command}`);
+
+		// Re-dispatching the same retained row toggles the still-mutable raised copy.
+		const secondClick = mode.resolveHistoryClickAction(resizedTarget);
+		expect(secondClick).toBeDefined();
+		secondClick?.();
+		expect(mode.chatContainer.children).toHaveLength(childCount + 1);
+		expect(plainRows(raised!.render(120)).join("\n")).not.toContain(`out-${command}`);
+	});
+
+	it("keeps wrapped standalone physical history targets distinct", () => {
+		const callId = "standalone-wrapped";
+		const standalone = new CompactToolCallComponent();
+		standalone.addCall(
+			callId,
+			"bash",
+			"Bash",
+			{ command: "echo standalone-header 0123456789 continuation-marker" },
+			undefined,
+		);
+		standalone.updateResult(
+			{ content: [{ type: "text", text: "STANDALONE-OUTPUT" }], isError: false },
+			false,
+			callId,
+		);
+		standalone.seal();
+
+		const rows = plainRows(standalone.render(40));
+		const headerRow = rows.findIndex(row => row.includes("Bash(echo standalone-header"));
+		expect(headerRow).toBeGreaterThanOrEqual(0);
+		const continuationRow = rows.findIndex((row, index) => index > headerRow && row.includes("continuation-marker"));
+		expect(continuationRow).toBeGreaterThan(headerRow);
+
+		const headerTarget = standalone.historyTarget(headerRow);
+		const continuationTarget = standalone.historyTarget(continuationRow);
+		expect(headerTarget).toBeDefined();
+		expect(continuationTarget).toBeDefined();
+		expect(continuationTarget).not.toBe(headerTarget);
+	});
+
+	it("opens the wrapped expanded call continuation instead of the next call", async () => {
+		term = new VirtualTerminal(40, 32);
+		mode = new InteractiveMode(
+			session,
+			"test",
+			undefined,
+			() => {},
+			undefined,
+			undefined,
+			undefined,
+			new Composer({ terminal: term }),
+		);
+		await mode.init({ suppressWelcomeIntro: true });
+		void mode.getUserInput();
 		await term.waitForRender();
-		// The click is swallowed, never misrouted onto a live row of another block.
-		expect(plainRows(group.render(120)).join("\n")).not.toContain("out-23");
+
+		const callCount = 24;
+		const group = new CompactToolCallComponent();
+		for (let index = 0; index < callCount; index++) {
+			const callId = `wrapped-call-${index}`;
+			const command =
+				index === callCount - 1
+					? `echo wrapped-${index} compact history terminal tail-${index}`
+					: `echo wrapped-${index} compact history continuation marker-${index}`;
+			group.addCall(callId, "bash", "Bash", { command }, undefined);
+			group.updateResult(
+				{ content: [{ type: "text", text: `EXPANDED-OUTPUT-${index}` }], isError: false },
+				false,
+				callId,
+			);
+		}
+		group.seal();
+		group.setExpanded(true);
+		mode.chatContainer.addChild(group);
+		mode.ui.requestRender();
+		await term.waitForRender(() => {
+			const rows = plainRows(term.getViewport());
+			const mutableTop = mode.ui.getMutableViewport().top;
+			return rows.some(
+				(row, index) =>
+					index < mutableTop &&
+					row.includes("continuation marker-") &&
+					mode.ui.historyRowTarget(index) !== undefined,
+			);
+		});
+
+		const rows = plainRows(term.getViewport());
+		const mutableTop = mode.ui.getMutableViewport().top;
+		const continuationRow = rows.findLastIndex(
+			(row, index) =>
+				index < mutableTop && row.includes("continuation marker-") && mode.ui.historyRowTarget(index) !== undefined,
+		);
+		expect(continuationRow).toBeGreaterThanOrEqual(0);
+		expect(continuationRow).toBeLessThan(mutableTop);
+		const continuationTarget = mode.ui.historyRowTarget(continuationRow);
+		expect(continuationTarget).toBeDefined();
+		const callId = rows[continuationRow]!.match(/continuation marker-(\d+)/)?.[1];
+		expect(callId).toBeDefined();
+		const callIndex = Number(callId);
+		expect(callIndex).toBeGreaterThanOrEqual(0);
+		expect(callIndex).toBeLessThan(callCount - 1);
+
+		const headerRow = rows.findLastIndex(
+			(row, index) =>
+				index < mutableTop &&
+				row.includes(`Bash(echo wrapped-${callIndex} compact`) &&
+				mode.ui.historyRowTarget(index) !== undefined,
+		);
+		expect(headerRow).toBeGreaterThanOrEqual(0);
+		expect(headerRow).toBeLessThan(continuationRow);
+		const headerTarget = mode.ui.historyRowTarget(headerRow);
+		expect(headerTarget).toBeDefined();
+		expect(continuationTarget).not.toBe(headerTarget);
+
+		term.sendInput(`\x1b[<35;2;${continuationRow + 1}M`);
+		await term.waitForRender(
+			() =>
+				term.getViewportRowUnderlineColumns(continuationRow).length > 0 &&
+				term.getViewportRowUnderlineColumns(headerRow).length === 0,
+		);
+		expect(term.getViewportRowUnderlineColumns(continuationRow)).not.toHaveLength(0);
+		expect(term.getViewportRowUnderlineColumns(headerRow)).toHaveLength(0);
+
+		term.sendInput(`\x1b[<0;1;${continuationRow + 1}M`);
+		await term.waitForRender(() =>
+			plainRows(term.getViewport()).some(row => row.includes(`EXPANDED-OUTPUT-${callIndex}`)),
+		);
+
+		const openedRows = plainRows(term.getViewport()).join("\n");
+		expect(openedRows).toContain(`EXPANDED-OUTPUT-${callIndex}`);
+		expect(openedRows).not.toContain(`EXPANDED-OUTPUT-${callIndex + 1}`);
 	});
 });

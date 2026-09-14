@@ -532,4 +532,41 @@ describe("terminal frame plans", () => {
 		expect(resized).toEqual(["history-one@30", "history-two@30", "editor@30"]);
 		tui.stop();
 	});
+
+	it("aligns replay targets through the bottom split and repaints only the hovered history row", () => {
+		const terminal = new VirtualTerminal(20, 4);
+		const targets = [Object.freeze({}), Object.freeze({}), Object.freeze({}), Object.freeze({})];
+		const rows = ["retired-one", "retired-two", "retired-three", "retired-four"];
+		const provider = new Provider({
+			history: {
+				id: 1,
+				kind: "replay",
+				rows,
+				targets,
+				hoverRows: rows.map(row => `\x1b[4m${row}\x1b[24m`),
+			},
+			viewport: ["", "", "live", "editor"],
+		});
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		tui.setFrameProvider(provider);
+
+		expect(terminal.getViewport().map(row => Bun.stripANSI(row).trimEnd())).toEqual(
+			rows.slice(2).concat(["live", "editor"]),
+		);
+		expect([0, 1, 2, 3].map(row => tui.historyRowTarget(row))).toEqual([
+			targets[2],
+			targets[3],
+			undefined,
+			undefined,
+		]);
+
+		tui.setHistoryHoverTarget(targets[3]);
+		expect(terminal.getViewportRowUnderlineColumns(1).length).toBeGreaterThan(0);
+		expect(terminal.getViewportRowUnderlineColumns(0)).toHaveLength(0);
+
+		tui.setHistoryHoverTarget(targets[2]);
+		expect(terminal.getViewportRowUnderlineColumns(1)).toHaveLength(0);
+		expect(terminal.getViewportRowUnderlineColumns(0).length).toBeGreaterThan(0);
+		tui.stop();
+	});
 });

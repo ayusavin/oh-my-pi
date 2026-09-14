@@ -208,8 +208,10 @@ export class InputController {
 	#expandToolsListenerInstalled = false;
 	#inlineMouseListenerInstalled = false;
 
-	/** Click-candidate id the hover band currently tracks; repaint only on change. */
+	/** Click-candidate id the live hover band currently tracks. */
 	#lastHoverClickId: string | undefined;
+	/** Opaque history target directly repainted in the normal buffer. */
+	#lastHistoryHoverTarget: unknown | undefined;
 
 	/** Return the last full editor snapshot delivered by its change contract. */
 	getDraftText(): string {
@@ -684,16 +686,54 @@ export class InputController {
 	}
 
 	/**
-	 * Track the hovered click target, repainting only when it changes. The band
-	 * is id-anchored in the composer, so it follows an agent whose rows shift
-	 * while streaming; pointing at chrome clears it.
+	 * Route motion through the authoritative history ledger before the mutable
+	 * viewport: replay can bottom-split history into the viewport's leading
+	 * rows, where both mappings otherwise have a local index.
 	 */
 	#updateHoverHighlight(screenRow: number): void {
-		const hovered = this.#viewportCandidates(screenRow)[0];
-		if (hovered === this.#lastHoverClickId) return;
-		this.#lastHoverClickId = hovered;
-		this.ctx.setClickHoverId(hovered);
-		this.ctx.ui.requestRender();
+		const target = this.ctx.ui.historyRowTarget(screenRow);
+		if (target !== undefined) {
+			const clearedViewport = this.#clearViewportHover();
+			if (target === this.#lastHistoryHoverTarget) {
+				this.ctx.ui.setHistoryHoverTarget(target);
+				if (clearedViewport) this.ctx.ui.requestRender();
+				return;
+			}
+			this.#lastHistoryHoverTarget = target;
+			this.ctx.ui.setHistoryHoverTarget(target);
+			if (clearedViewport) this.ctx.ui.requestRender();
+			return;
+		}
+		const local = this.#viewportLocalRow(screenRow);
+		if (local !== undefined) {
+			const clearedHistory = this.#clearHistoryHover();
+			const hovered = this.ctx.resolveViewportClickCandidates(local)[0];
+			if (hovered === this.#lastHoverClickId) {
+				if (clearedHistory) this.ctx.ui.requestRender();
+				return;
+			}
+			this.#lastHoverClickId = hovered;
+			this.ctx.setClickHoverId(hovered);
+			this.ctx.ui.requestRender();
+			return;
+		}
+		const clearedViewport = this.#clearViewportHover();
+		this.#clearHistoryHover();
+		if (clearedViewport) this.ctx.ui.requestRender();
+	}
+
+	#clearViewportHover(): boolean {
+		if (this.#lastHoverClickId === undefined) return false;
+		this.#lastHoverClickId = undefined;
+		this.ctx.setClickHoverId(undefined);
+		return true;
+	}
+
+	#clearHistoryHover(): boolean {
+		if (this.#lastHistoryHoverTarget === undefined) return false;
+		this.#lastHistoryHoverTarget = undefined;
+		this.ctx.ui.setHistoryHoverTarget(undefined);
+		return true;
 	}
 
 	// Local row under a screen row, or undefined when the published viewport
@@ -711,19 +751,39 @@ export class InputController {
 	}
 
 	/**
-	 * Route a left click: a viewport row's own click action (e.g. a compact
-	 * tool row's expand/collapse, C7) wins over subagent-focus routing, so a
-	 * non-agent click target never falls through to "That subagent is gone".
+	 * Route a left click through the authoritative history ledger before the
+	 * mutable viewport. A history target resolves only when the event arrives,
+	 * never from a closure stored with the retired row.
 	 */
 	#handleViewportClick(screenRow: number): void {
-		const local = this.#viewportLocalRow(screenRow);
-		const action = local === undefined ? undefined : this.ctx.resolveViewportClickAction(local);
-		if (action === undefined || local === undefined) {
-			this.#focusClickedAgent(screenRow);
+		const target = this.ctx.ui.historyRowTarget(screenRow);
+		if (target !== undefined) {
+			const clearedViewport = this.#clearViewportHover();
+			this.#clearHistoryHover();
+			const action = this.ctx.resolveHistoryClickAction(target);
+			if (action !== undefined) {
+				action();
+				this.ctx.ui.requestRender();
+			} else if (clearedViewport) {
+				this.ctx.ui.requestRender();
+			}
 			return;
 		}
-		action(local);
-		this.ctx.ui.requestRender();
+		const local = this.#viewportLocalRow(screenRow);
+		if (local !== undefined) {
+			this.#clearHistoryHover();
+			const action = this.ctx.resolveViewportClickAction(local);
+			if (action === undefined) {
+				this.#focusClickedAgent(screenRow);
+				return;
+			}
+			action(local);
+			this.ctx.ui.requestRender();
+			return;
+		}
+		const clearedViewport = this.#clearViewportHover();
+		this.#clearHistoryHover();
+		if (clearedViewport) this.ctx.ui.requestRender();
 	}
 
 	/**
@@ -734,6 +794,7 @@ export class InputController {
 	 */
 	clearHoverHighlight(): void {
 		this.#lastHoverClickId = undefined;
+		this.#lastHistoryHoverTarget = undefined;
 	}
 
 	#focusClickedAgent(screenRow: number): void {

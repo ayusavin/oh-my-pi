@@ -31,7 +31,7 @@
  */
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { Component } from "@oh-my-pi/pi-tui";
-import { Container, Text } from "@oh-my-pi/pi-tui";
+import { Container, replaceTabs, Text, wrapTextWithAnsi } from "@oh-my-pi/pi-tui";
 import { formatDuration } from "@oh-my-pi/pi-utils";
 import { theme } from "../../modes/theme/theme";
 import { TRUNCATE_LENGTHS, type ToolUIStatus } from "../../tools/render-utils";
@@ -79,6 +79,78 @@ interface CompactCallEntry {
 	 * hovering or clicking one dimmed subordinate line — or its open card,
 	 * once opened (req 4) — never bands/toggles a sibling row. */
 	clickId: string;
+}
+
+interface CompactHistoryPresentation {
+	expanded: boolean;
+	rowExpanded: boolean | undefined;
+	openToolCallId: string | undefined;
+}
+
+interface CompactHistoryPhysicalRow {
+	section: "before" | "card" | "after";
+	/** The summary has no call owner; every other row carries its call id. */
+	owner: string | undefined;
+	logicalRowIndex: number;
+	wrappedSegmentIndex: number;
+}
+
+interface CompactHistoryLogicalRow {
+	text: string;
+	toolCallId: string | undefined;
+}
+
+type CompactHistoryTarget =
+	| {
+			kind: "summary";
+			physicalRow: CompactHistoryPhysicalRow;
+			presentation: CompactHistoryPresentation;
+	  }
+	| {
+			kind: "tool-call";
+			toolCallId: string;
+			physicalRow: CompactHistoryPhysicalRow;
+			presentation: CompactHistoryPresentation;
+	  };
+
+function isCompactHistoryTarget(target: unknown): target is CompactHistoryTarget {
+	if (typeof target !== "object" || target === null) return false;
+	const candidate = target as {
+		kind?: unknown;
+		toolCallId?: unknown;
+		physicalRow?: {
+			section?: unknown;
+			owner?: unknown;
+			logicalRowIndex?: unknown;
+			wrappedSegmentIndex?: unknown;
+		};
+		presentation?: { expanded?: unknown; rowExpanded?: unknown; openToolCallId?: unknown };
+	};
+	const physicalRow = candidate.physicalRow;
+	const presentation = candidate.presentation;
+	const hasValidPhysicalRow =
+		physicalRow !== undefined &&
+		(physicalRow.section === "before" || physicalRow.section === "card" || physicalRow.section === "after") &&
+		(physicalRow.owner === undefined || typeof physicalRow.owner === "string") &&
+		typeof physicalRow.logicalRowIndex === "number" &&
+		Number.isInteger(physicalRow.logicalRowIndex) &&
+		physicalRow.logicalRowIndex >= 0 &&
+		typeof physicalRow.wrappedSegmentIndex === "number" &&
+		Number.isInteger(physicalRow.wrappedSegmentIndex) &&
+		physicalRow.wrappedSegmentIndex >= 0;
+	const kindMatchesOwner =
+		(candidate.kind === "summary" && candidate.toolCallId === undefined && physicalRow?.owner === undefined) ||
+		(candidate.kind === "tool-call" &&
+			typeof candidate.toolCallId === "string" &&
+			physicalRow?.owner === candidate.toolCallId);
+	return (
+		kindMatchesOwner &&
+		hasValidPhysicalRow &&
+		presentation !== undefined &&
+		typeof presentation.expanded === "boolean" &&
+		(presentation.rowExpanded === undefined || typeof presentation.rowExpanded === "boolean") &&
+		(presentation.openToolCallId === undefined || typeof presentation.openToolCallId === "string")
+	);
 }
 
 /** Tools whose settled completion is worth a duration on the row — a
@@ -158,7 +230,10 @@ function formatPrimaryText(summary: ToolActivitySummary): string {
 
 /** First line of a failed call's error text (C3), bounded the same way. */
 function firstErrorLine(text: string | undefined): string | undefined {
-	const line = (text ?? "").replace(/^Error:\s*/, "").split("\n", 1)[0]?.trim();
+	const line = (text ?? "")
+		.replace(/^Error:\s*/, "")
+		.split("\n", 1)[0]
+		?.trim();
 	return line ? truncateToWidth(line, TRUNCATE_LENGTHS.LINE, Ellipsis.Unicode) : undefined;
 }
 
@@ -202,7 +277,9 @@ function renderCallLine(entry: CompactCallEntry, prefix: string): string {
 			meta.push(formatDuration(Math.round(entry.durationMs)));
 		}
 		if (entry.resultSummary) {
-			meta.push(truncateToWidth(entry.resultSummary.replace(/\s+/g, " ").trim(), TRUNCATE_LENGTHS.LINE, Ellipsis.Unicode));
+			meta.push(
+				truncateToWidth(entry.resultSummary.replace(/\s+/g, " ").trim(), TRUNCATE_LENGTHS.LINE, Ellipsis.Unicode),
+			);
 		}
 	}
 	return `${prefix}${renderStatusLine({ icon: status, title, titleColor: "toolTitle", meta }, theme)}`;
@@ -319,6 +396,14 @@ let nextToolRowClickId = 1;
  */
 export class CompactToolCallComponent extends Container implements ToolExecutionHandle {
 	#entries = new Map<string, CompactCallEntry>();
+	/** One descriptor per semantic physical row and captured presentation,
+	 * retained so re-offering the same history row preserves its Composer token. */
+	#historyTargets = new Map<string, CompactHistoryTarget>();
+	/** Logical rows whose text `Text` wraps before and after the open card. */
+	#beforeRows: CompactHistoryLogicalRow[] = [];
+	#afterRows: CompactHistoryLogicalRow[] = [];
+	/** Exact physical-row descriptors for the output of the latest `render`. */
+	#lastHistoryTargets: readonly CompactHistoryTarget[] = [];
 	#beforeText: Text;
 	#afterText: Text;
 	#expanded = false;
@@ -350,13 +435,6 @@ export class CompactToolCallComponent extends Container implements ToolExecution
 	 * entry open per instance — opening a second closes the first. */
 	#openCallId: string | undefined;
 	#openCard: ToolExecutionComponent | undefined;
-	/** Row count the open card's last actual render produced, at the width
-	 * that render used. `getClickFocusAgentIds`/`getViewportClickAction`
-	 * take no width, so they cannot re-render to learn this — they rely on
-	 * this cache instead. Always fresh where it matters: `Composer.renderFrame`
-	 * only ever calls them immediately after it renders this component for
-	 * the same frame. */
-	#lastCardRows = 0;
 
 	constructor() {
 		super();
@@ -474,44 +552,42 @@ export class CompactToolCallComponent extends Container implements ToolExecution
 		return this.#entries.size > 0;
 	}
 
+	/** Resolve an unwrapped logical row before a render has supplied its
+	 * width-dependent physical target map. Only rows above a card can be
+	 * addressed this way: card and after-card row heights require render. */
+	#unrenderedBeforeTarget(local: number): CompactHistoryTarget | undefined {
+		const row = this.#beforeRows[local];
+		if (!row) return undefined;
+		return this.#historyTargetFor(
+			row.toolCallId,
+			{
+				expanded: this.#expanded,
+				rowExpanded: this.#rowExpanded,
+				openToolCallId: this.#openCallId,
+			},
+			"before",
+			local,
+			0,
+		);
+	}
+
 	/**
-	 * Resolve the click target for one row-local index within this
-	 * component's own last rendered output (0-indexed from its first row):
-	 * the group's own summary line, a still-dimmed subordinate call line, or
-	 * one of the currently open call's own card rows. `undefined` when that
-	 * row carries no click target at all (a collapsed group's hidden rows).
-	 * Shared by {@link getClickFocusAgentIds} and
-	 * {@link getViewportClickAction} so hover and click always agree on
-	 * exactly which row a given index means.
+	 * Resolve the click target for one row-local index. A completed render
+	 * supplies exact physical rows; before render, only unwrapped before rows
+	 * have an addressable logical index. Shared by {@link getClickFocusAgentIds}
+	 * and {@link getViewportClickAction} so hover and click always agree.
 	 */
 	#rowTarget(local: number): { id: string; onClick: () => void } | undefined {
-		const entries = [...this.#entries.values()];
-		if (entries.length <= 1) {
-			const entry = entries[0];
-			if (!entry) return undefined;
-			if (this.#openCallId === entry.toolCallId) {
-				// Any row of the open card closes it — mirrors "a second click on
-				// any of that card's own rows returns it to the one-line form".
-				return { id: entry.clickId, onClick: () => this.#closeOpenCard() };
-			}
-
-			return { id: entry.clickId, onClick: () => this.#openCall(entry.toolCallId) };
+		const target =
+			this.historyTarget(local) ??
+			(this.#lastHistoryTargets.length === 0 ? this.#unrenderedBeforeTarget(local) : undefined);
+		if (target === undefined) return undefined;
+		if (target.kind === "summary") {
+			return { id: this.#clickId, onClick: () => this.applyHistoryTarget(target) };
 		}
-		if (local <= 0) return { id: this.#clickId, onClick: () => this.toggleExpanded() };
-		if (!(this.#rowExpanded ?? this.#expanded)) return undefined; // collapsed: only row 0 exists.
-		let row = 1;
-		for (const entry of entries) {
-			const isOpen = this.#openCallId === entry.toolCallId;
-			// An open call owns its header row plus every row of its card; a
-			// click anywhere in that run closes it again.
-			const span = isOpen ? 1 + Math.max(0, this.#lastCardRows) : 1;
-			if (local < row + span) {
-				if (isOpen) return { id: entry.clickId, onClick: () => this.#closeOpenCard() };
-				return { id: entry.clickId, onClick: () => this.#openCall(entry.toolCallId) };
-			}
-			row += span;
-		}
-		return undefined;
+		const entry = this.#entries.get(target.toolCallId);
+		if (!entry) return undefined;
+		return { id: entry.clickId, onClick: () => this.applyHistoryTarget(target) };
 	}
 
 	/** Click-candidate id for hover banding (C7), resolved per row so
@@ -537,6 +613,107 @@ export class CompactToolCallComponent extends Container implements ToolExecution
 			const row = Number.isInteger(local) && local >= 0 ? local : 0;
 			this.#rowTarget(row)?.onClick();
 		};
+	}
+
+	/**
+	 * Resolve a physical row against the exact target map captured by the
+	 * latest render. Retired rows retain that descriptor in Composer's token
+	 * cache, so later presentation changes cannot reinterpret them.
+	 */
+	historyTarget(local: number): CompactHistoryTarget | undefined {
+		if (!Number.isInteger(local) || local < 0) return undefined;
+		return this.#lastHistoryTargets[local];
+	}
+
+	#historyTargetsFor(
+		rows: readonly CompactHistoryLogicalRow[],
+		section: CompactHistoryPhysicalRow["section"],
+		width: number,
+		presentation: CompactHistoryPresentation,
+	): CompactHistoryTarget[] {
+		const targets: CompactHistoryTarget[] = [];
+		const contentWidth = Math.max(1, width);
+		for (let logicalRowIndex = 0; logicalRowIndex < rows.length; logicalRowIndex++) {
+			const row = rows[logicalRowIndex]!;
+			const segmentCount = wrapTextWithAnsi(replaceTabs(row.text), contentWidth).length;
+			for (let wrappedSegmentIndex = 0; wrappedSegmentIndex < segmentCount; wrappedSegmentIndex++) {
+				targets.push(
+					this.#historyTargetFor(row.toolCallId, presentation, section, logicalRowIndex, wrappedSegmentIndex),
+				);
+			}
+		}
+		return targets;
+	}
+
+	#historyTargetFor(
+		toolCallId: string | undefined,
+		presentation: CompactHistoryPresentation,
+		section: CompactHistoryPhysicalRow["section"],
+		logicalRowIndex: number,
+		wrappedSegmentIndex: number,
+	): CompactHistoryTarget {
+		const physicalRow: CompactHistoryPhysicalRow = {
+			section,
+			owner: toolCallId,
+			logicalRowIndex,
+			wrappedSegmentIndex,
+		};
+		const key = JSON.stringify([
+			toolCallId === undefined ? "summary" : "tool-call",
+			toolCallId,
+			presentation.expanded,
+			presentation.rowExpanded,
+			presentation.openToolCallId,
+			physicalRow.section,
+			physicalRow.owner,
+			physicalRow.logicalRowIndex,
+			physicalRow.wrappedSegmentIndex,
+		]);
+		const existing = this.#historyTargets.get(key);
+		if (existing !== undefined) return existing;
+		const target =
+			toolCallId === undefined
+				? { kind: "summary" as const, physicalRow, presentation: { ...presentation } }
+				: { kind: "tool-call" as const, toolCallId, physicalRow, presentation: { ...presentation } };
+		this.#historyTargets.set(key, target);
+		return target;
+	}
+
+	/** Apply a captured semantic history action to this component's current state. */
+	applyHistoryTarget(target: unknown): void {
+		if (!isCompactHistoryTarget(target)) return;
+		if (target.kind === "summary") {
+			if (this.#entries.size > 1) this.toggleExpanded();
+			return;
+		}
+		if (!this.#entries.has(target.toolCallId)) return;
+		if (this.#openCallId === target.toolCallId) this.#closeOpenCard();
+		else this.#openCall(target.toolCallId);
+	}
+
+	/**
+	 * Re-create this retired group at the live transcript bottom from its
+	 * emitted presentation, then apply the captured semantic action. Native
+	 * scrollback cannot change in place, and fresh click ids prevent its hover
+	 * band from aliasing the raised rows.
+	 */
+	raiseFromHistory(target: unknown): Component | undefined {
+		if (!isCompactHistoryTarget(target) || this.#entries.size === 0) return undefined;
+		const raised = new CompactToolCallComponent();
+		for (const entry of this.#entries.values()) {
+			raised.#entries.set(entry.toolCallId, { ...entry, clickId: `@omp:tool-row:${nextToolRowClickId++}` });
+		}
+		raised.#expanded = target.presentation.expanded;
+		raised.#rowExpanded = target.presentation.rowExpanded;
+		raised.#toolActivityVisible = this.#toolActivityVisible;
+		raised.#finalized = this.#finalized;
+		raised.#sealed = this.#sealed;
+		raised.#blockVersion = this.#blockVersion;
+		const openToolCallId = target.presentation.openToolCallId;
+		if (openToolCallId !== undefined && raised.#entries.has(openToolCallId)) raised.#openCall(openToolCallId);
+		else raised.#updateDisplay();
+		raised.applyHistoryTarget(target);
+		return raised;
 	}
 
 	/**
@@ -593,15 +770,33 @@ export class CompactToolCallComponent extends Container implements ToolExecution
 	}
 
 	override render(width: number): readonly string[] {
-		if (!this.#toolActivityVisible) return [];
+		if (!this.#toolActivityVisible) {
+			this.#lastHistoryTargets = [];
+			return [];
+		}
+		const presentation: CompactHistoryPresentation = {
+			expanded: this.#expanded,
+			rowExpanded: this.#rowExpanded,
+			openToolCallId: this.#openCallId,
+		};
 		const beforeLines = this.#beforeText.render(width);
-		const cardLines = this.#openCard
-			? this.#openCard.render(Math.max(1, width - NEST_INDENT.length)).map(line => `${NEST_INDENT}${line}`)
-			: [];
-		this.#lastCardRows = cardLines.length;
+		const openToolCallId = this.#openCallId;
+		const cardLines =
+			this.#openCard && openToolCallId !== undefined
+				? this.#openCard.render(Math.max(1, width - NEST_INDENT.length)).map(line => `${NEST_INDENT}${line}`)
+				: [];
 		const afterLines = this.#afterText.render(width);
-		if (beforeLines.length === 0 && cardLines.length === 0 && afterLines.length === 0) return [];
-		return [...beforeLines, ...cardLines, ...afterLines];
+		const beforeTargets = this.#historyTargetsFor(this.#beforeRows, "before", width, presentation);
+		const cardTargets =
+			openToolCallId === undefined
+				? []
+				: cardLines.map((_line, logicalRowIndex) =>
+						this.#historyTargetFor(openToolCallId, presentation, "card", logicalRowIndex, 0),
+					);
+		const afterTargets = this.#historyTargetsFor(this.#afterRows, "after", width, presentation);
+		const lines = [...beforeLines, ...cardLines, ...afterLines];
+		this.#lastHistoryTargets = [...beforeTargets, ...cardTargets, ...afterTargets];
+		return lines;
 	}
 
 	/** Calls never park as background tasks; the handle method is a no-op. */
@@ -648,40 +843,48 @@ export class CompactToolCallComponent extends Container implements ToolExecution
 	 * the one place display state actually gets read for rendering.
 	 */
 	#updateDisplay(): void {
+		// A layout change makes the prior render's physical row indices invalid
+		// before callers can observe the new logical rows.
+		this.#lastHistoryTargets = [];
 		if (this.#openCallId !== undefined && !this.#entries.has(this.#openCallId)) {
 			this.#closeOpenCardInternal();
 		}
 		const entries = [...this.#entries.values()];
-		let beforeLines: string[];
-		const afterLines: string[] = [];
+		let beforeRows: CompactHistoryLogicalRow[];
+		const afterRows: CompactHistoryLogicalRow[] = [];
 		if (entries.length > 1) {
 			const expanded = this.#rowExpanded ?? this.#expanded;
 			if (!expanded) {
 				if (this.#openCallId !== undefined) this.#closeOpenCardInternal();
-				beforeLines = [renderGroupLine(entries, false)];
+				beforeRows = [{ text: renderGroupLine(entries, false), toolCallId: undefined }];
 			} else {
-				beforeLines = [renderGroupLine(entries, true)];
-				let sink = beforeLines;
+				beforeRows = [{ text: renderGroupLine(entries, true), toolCallId: undefined }];
+				let sink = beforeRows;
 				for (const entry of entries) {
 					const isOpen = entry.toolCallId === this.#openCallId;
 					const marker = rowMarker(isOpen ? "open" : "closed");
 					// The open call keeps its own header above the card, so the row
 					// that closes it again is on screen and marked `▾`.
-					sink.push(dimLine(renderCallLine(entry, `${NEST_INDENT}${marker} `)));
-					if (isOpen) sink = afterLines;
+					sink.push({
+						text: dimLine(renderCallLine(entry, `${NEST_INDENT}${marker} `)),
+						toolCallId: entry.toolCallId,
+					});
+					if (isOpen) sink = afterRows;
 				}
 			}
 		} else {
 			const entry = entries[0];
-			if (!entry) beforeLines = [];
+			if (!entry) beforeRows = [];
 			else {
 				const isOpen = this.#openCallId === entry.toolCallId;
 				const marker = rowMarker(isOpen ? "open" : "closed");
-				beforeLines = [renderCallLine(entry, `${marker} `)];
+				beforeRows = [{ text: renderCallLine(entry, `${marker} `), toolCallId: entry.toolCallId }];
 			}
 		}
-		this.#beforeText.setText(beforeLines.join("\n"));
-		this.#afterText.setText(afterLines.join("\n"));
+		this.#beforeRows = beforeRows;
+		this.#afterRows = afterRows;
+		this.#beforeText.setText(beforeRows.map(row => row.text).join("\n"));
+		this.#afterText.setText(afterRows.map(row => row.text).join("\n"));
 		this.#syncChildren();
 	}
 
