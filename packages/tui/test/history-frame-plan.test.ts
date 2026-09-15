@@ -382,6 +382,62 @@ describe("terminal frame plans", () => {
 		tui.stop();
 	});
 
+	it("maps committed history targets, shifts them with scrolling, and excludes the mutable viewport", () => {
+		const terminal = new VirtualTerminal(20, 3);
+		const first = {};
+		const second = {};
+		const third = {};
+		const provider = new Provider({
+			history: { id: 1, rows: ["first", "second"], targets: [first, second] },
+			viewport: ["editor"],
+		});
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		tui.setInlineMouseTrackingProvider(() => true);
+		tui.setFrameProvider(provider);
+
+		expect(tui.historyRowTarget(0)).toBe(first);
+		expect(tui.historyRowTarget(1)).toBe(second);
+		expect(tui.historyRowTarget(2)).toBeUndefined();
+
+		provider.plan = { history: { id: 2, rows: ["third"], targets: [third] }, viewport: ["editor"] };
+		tui.requestRender(true);
+
+		expect(tui.historyRowTarget(0)).toBe(second);
+		expect(tui.historyRowTarget(1)).toBe(third);
+		expect(tui.historyRowTarget(2)).toBeUndefined();
+		tui.stop();
+	});
+
+	it("drops committed history targets on resize", () => {
+		const terminal = new VirtualTerminal(20, 3);
+		const target = {};
+		const provider = new Provider({ history: { id: 1, rows: ["target"], targets: [target] }, viewport: ["editor"] });
+		const renderScheduler = new ResizeScheduler();
+		const tui = new TUI(terminal, undefined, { renderScheduler });
+		tui.setInlineMouseTrackingProvider(() => true);
+		tui.setFrameProvider(provider);
+		tui.start();
+
+		expect(tui.historyRowTarget(0)).toBe(target);
+		terminal.resize(21, 3);
+		expect(tui.historyRowTarget(0)).toBeUndefined();
+		tui.stop();
+	});
+
+	it("drops committed history targets on a destructive reset", () => {
+		const terminal = new VirtualTerminal(20, 3);
+		const target = {};
+		const provider = new Provider({ history: { id: 1, rows: ["target"], targets: [target] }, viewport: ["editor"] });
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		tui.setInlineMouseTrackingProvider(() => true);
+		tui.setFrameProvider(provider);
+
+		expect(tui.historyRowTarget(0)).toBe(target);
+		tui.resetDisplay();
+		expect(tui.historyRowTarget(0)).toBeUndefined();
+		tui.stop();
+	});
+
 	it("uses the alternate buffer during resize and restores anchored history", () => {
 		const terminal = new VirtualTerminal(20, 4);
 		const provider = new Provider({ history: { id: 1, rows: ["welcome"] }, viewport: ["editor"] });

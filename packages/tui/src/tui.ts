@@ -142,6 +142,8 @@ export interface HistoryBatch {
 	 * one synchronous terminal write.
 	 */
 	readonly kind?: "append" | "replay";
+	/** Opaque interaction targets, index-aligned with {@link rows}. */
+	readonly targets?: readonly (object | undefined)[];
 }
 
 /** One history append or complete replay plus the mutable viewport for a terminal frame. */
@@ -694,6 +696,8 @@ export class TUI extends Container {
 	// Screen row where the provider's mutable viewport begins (0-based); rows
 	// above it hold history still visible on the physical screen.
 	#providerViewportTop = 0;
+	/** Committed-history interaction targets indexed by their visible screen row. */
+	#historyRowLedger: Array<object | undefined> = [];
 	// Net composer-space offset of the published hit-test origin behind the
 	// painted top, from the last paint: replay-replaced rows minus viewport
 	// rows the paint prepended for a short viewport. Negative while prepended
@@ -1154,6 +1158,52 @@ export class TUI extends Container {
 		return { top: this.#providerViewportTop - this.#providerViewportPadTop, length: this.#providerWindow.length };
 	}
 
+	/** Opaque target of a visible committed-history row, never a mutable viewport row. */
+	historyRowTarget(screenRow: number): object | undefined {
+		if (
+			!Number.isInteger(screenRow) ||
+			screenRow < 0 ||
+			screenRow >= this.#providerViewportTop ||
+			screenRow >= this.terminal.rows ||
+			this.#mouseTracking === "off" ||
+			this.#altActive ||
+			this.#resizeAltActive ||
+			this.#resizeProbe !== undefined ||
+			this.#resizeInPlaceActive ||
+			this.#ghosttyInitialImageDelayTimer !== undefined
+		) {
+			return undefined;
+		}
+		return this.#historyRowLedger[screenRow];
+	}
+
+	#clearHistoryRowLedger(): void {
+		this.#historyRowLedger = [];
+	}
+
+	#noteHistoryRowTargets(
+		targets: readonly (object | undefined)[] | undefined,
+		rows: number,
+		startTop: number,
+		pushed: number,
+		mutableTop: number,
+		height: number,
+	): void {
+		if (this.#mouseTracking === "off") {
+			this.#clearHistoryRowLedger();
+			return;
+		}
+		const aligned = targets !== undefined && targets.length === rows;
+		for (let index = 0; index < rows; index++) {
+			this.#historyRowLedger[startTop + index] = aligned ? targets?.[index] : undefined;
+		}
+		if (pushed > 0) this.#historyRowLedger.splice(0, pushed);
+		this.#historyRowLedger.length = Math.min(this.#historyRowLedger.length, height);
+		for (let row = Math.max(0, mutableTop); row < this.#historyRowLedger.length; row++) {
+			this.#historyRowLedger[row] = undefined;
+		}
+	}
+
 	/**
 	 * Probe for opt-in normal-buffer click capture. The provider is read every
 	 * frame; while it returns true (and no fullscreen overlay owns the
@@ -1170,6 +1220,7 @@ export class TUI extends Container {
 		const wasOff = this.#mouseTracking === "off";
 		this.#mouseTracking = state;
 		if (state === "off") {
+			this.#clearHistoryRowLedger();
 			if (!wasOff) this.terminal.write(MOUSE_TRACKING_OFF);
 			return;
 		}
@@ -1237,6 +1288,7 @@ export class TUI extends Container {
 		this.terminal.start(
 			data => this.#handleInput(data),
 			() => {
+				this.#clearHistoryRowLedger();
 				if (this.#resizeProbe) {
 					// Warp echoes a height-only ±1 SIGWINCH on CSI ?1049l. The echo
 					// must not restart the alt borrow (that is the flicker loop),
@@ -2671,10 +2723,14 @@ export class TUI extends Container {
 		if (offered !== undefined && offered.id <= this.#acceptedHistoryBatchId) provider?.acknowledgeHistory(offered.id);
 
 		let historyRows = history?.rows ?? [];
+		let historyTargets =
+			history?.targets !== undefined && history.targets.length === historyRows.length ? history.targets : undefined;
 		let replayHistoryRows: readonly string[] = [];
+		let replayHistoryTargets: readonly (object | undefined)[] | undefined;
 		let replayViewportRows = 0;
 		let replayPrependedBlanks = 0;
 		if (history?.kind === "replay") {
+			this.#clearHistoryRowLedger();
 			// Providers may omit unused leading rows from a short viewport. Make
 			// that logical space explicit before the bottom-first replay split.
 			replayPrependedBlanks = Math.max(0, height - viewport.length);
@@ -2687,19 +2743,27 @@ export class TUI extends Container {
 			if (moved > 0) {
 				const split = historyRows.length - moved;
 				replayHistoryRows = historyRows.slice(split);
+				replayHistoryTargets = historyTargets?.slice(split);
 				viewport = [...replayHistoryRows, ...viewport.slice(moved)];
 				historyRows = historyRows.slice(0, split);
+				historyTargets = historyTargets?.slice(0, split);
 				replayViewportRows = moved;
 			}
 		}
 		const markers = this.#extractCursorMarkers(viewport);
 		const prepared = this.#prepareLinesArray(viewport, width, this.#providerPreparedRows);
 		const preparedHistory = this.#prepareLinesArray(historyRows, width);
+		const historyTargetRows = preparedHistory.lines.length + replayHistoryRows.length;
+		const ledgerTargets =
+			historyTargets === undefined || (replayHistoryRows.length > 0 && replayHistoryTargets === undefined)
+				? undefined
+				: [...historyTargets, ...(replayHistoryTargets ?? [])];
 		const rows = prepared.lines.length;
 		// Destructive reset (session replace, /tree, explicit clear, or a settled
 		// rebuild resize): erase native history and the viewport, then repaint from row zero.
 		const destructiveReset = this.#clearScrollbackOnNextRender;
 		if (destructiveReset) {
+			this.#clearHistoryRowLedger();
 			this.#providerViewportTop = 0;
 			this.#providerWindow = [];
 			this.#providerPreparedRows = [];
@@ -2741,6 +2805,7 @@ export class TUI extends Container {
 			!this.#forceViewportRepaintOnNextRender &&
 			!destructiveReset &&
 			this.#providerWindow.length > 0;
+		let pushed = 0;
 		if (diffable) {
 			for (let index = 0; index < rows; index++) {
 				const previous = this.#providerPreparedRows[index];
@@ -2771,7 +2836,7 @@ export class TUI extends Container {
 			// old viewport are committed history (correct to push), but old live
 			// viewport rows are not — erase them first so a scroll can only push
 			// committed rows and blanks, never an unfinished frame.
-			const pushed = Math.max(0, startTop + preparedHistory.lines.length + rows - height);
+			pushed = Math.max(0, startTop + preparedHistory.lines.length + rows - height);
 			if (pushed > this.#providerViewportTop && this.#providerWindow.length > 0) {
 				buffer += this.#eraseBelowRow(this.#providerViewportTop, height);
 			}
@@ -2823,6 +2888,9 @@ export class TUI extends Container {
 		}
 		buffer += this.#paintEndSequence;
 		this.terminal.write(buffer);
+		if (this.#mouseTracking !== "off") {
+			this.#noteHistoryRowTargets(ledgerTargets, historyTargetRows, startTop, pushed, mutableTop, height);
+		}
 		this.#debugPaint = {
 			lines: prepared.lines,
 			windowTop: this.#debugNextWindowTop,
@@ -2936,6 +3004,7 @@ export class TUI extends Container {
 			this.#forgetHardwareCursorState();
 			this.#altActive = false;
 			this.#mouseTracking = wantMouse;
+			if (wantMouse === "off") this.#clearHistoryRowLedger();
 			this.#altPreviousLines = [];
 			this.#altPreparedRows = [];
 			// The alt-buffer restore put the pre-overlay normal screen back. If

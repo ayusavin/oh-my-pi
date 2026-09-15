@@ -29,7 +29,7 @@ import type { InteractiveModeContext } from "../../modes/types";
 import manualContinuePrompt from "../../prompts/system/manual-continue.md" with { type: "text" };
 import { AgentRegistry } from "../../registry/agent-registry";
 import { USER_INTERRUPT_LABEL } from "../../session/messages";
-import { PINNED_HUD_TOGGLE_ID } from "../composer";
+import { PINNED_HUD_TOGGLE_ID, resolveHistoryRowTarget } from "../composer";
 import { pickRecentFocusableAgentId } from "./session-focus-controller";
 import { executeBuiltinSlashCommand, lookupBuiltinSlashCommand } from "../../slash-commands/builtin-registry";
 import { parseSlashCommand } from "../../slash-commands/helpers/parse";
@@ -216,6 +216,8 @@ export class InputController {
 		motionReports: 0,
 		motionReportsResolved: 0,
 		leftClicks: 0,
+		committedHistoryHits: 0,
+		emittedBlockHits: 0,
 		clicksResolved: 0,
 		clicksResolvedNoAction: 0,
 	};
@@ -224,6 +226,8 @@ export class InputController {
 		motionReports: 0,
 		motionReportsResolved: 0,
 		leftClicks: 0,
+		committedHistoryHits: 0,
+		emittedBlockHits: 0,
 		clicksResolved: 0,
 		clicksResolvedNoAction: 0,
 	};
@@ -708,12 +712,19 @@ export class InputController {
 			if (this.#updateHoverHighlight(event.row)) this.#toolRowInteraction.motionReportsResolved += 1;
 		} else if (event.leftClick) {
 			this.#toolRowInteraction.leftClicks += 1;
-			const result = this.#handleViewportClick(event.row);
+			const result = this.#handleToolRowClick(event.row);
 			if (result.resolved) {
 				this.#toolRowInteraction.clicksResolved += 1;
 				if (!result.acted) this.#toolRowInteraction.clicksResolvedNoAction += 1;
 			}
-			logger.debug("tool row click", { row: event.row, resolved: result.resolved, acted: result.acted });
+			if (result.source === "committed-history") this.#toolRowInteraction.committedHistoryHits += 1;
+			if (result.source === "emitted-block") this.#toolRowInteraction.emittedBlockHits += 1;
+			logger.debug("tool row click", {
+				row: event.row,
+				source: result.source ?? "none",
+				resolved: result.resolved,
+				acted: result.acted,
+			});
 		}
 		this.#flushToolRowInteraction();
 		return { consume: true };
@@ -751,24 +762,53 @@ export class InputController {
 		return viewport.length === 0 || local < 0 || local >= viewport.length ? undefined : local;
 	}
 
+	#handleToolRowClick(screenRow: number): {
+		resolved: boolean;
+		acted: boolean;
+		source: "live-viewport" | "emitted-block" | "committed-history" | undefined;
+	} {
+		const live = this.#handleViewportClick(screenRow);
+		if (live.resolved) {
+			return {
+				resolved: live.resolved,
+				acted: live.acted,
+				source: live.emittedBlock ? "emitted-block" : "live-viewport",
+			};
+		}
+		const target = this.ctx.ui.historyRowTarget(screenRow);
+		const group = target === undefined ? undefined : resolveHistoryRowTarget(target);
+		if (group === undefined) return { resolved: live.resolved, acted: live.acted, source: undefined };
+		group.toggleExpanded(true);
+		this.ctx.chatContainer.resetStableEmission();
+		this.ctx.ui.resetDisplay();
+		return { resolved: true, acted: true, source: "committed-history" };
+	}
+
 	/** Route a left click only through the live mutable viewport. */
-	#handleViewportClick(screenRow: number): { resolved: boolean; acted: boolean } {
+	#handleViewportClick(screenRow: number): { resolved: boolean; acted: boolean; emittedBlock: boolean } {
 		const local = this.#viewportLocalRow(screenRow);
 		if (local !== undefined) {
 			const candidates = this.ctx.resolveViewportClickCandidates(local);
 			const action = this.ctx.resolveViewportClickAction(local);
 			if (action !== undefined) {
-				action(local);
-				this.ctx.ui.requestRender();
+				const owner = this.ctx.resolveViewportClickOwner(local);
+				const fullRepaintRequested = owner !== undefined && this.ctx.chatContainer.isBlockEmitted(owner);
+				action(local, fullRepaintRequested);
+				if (fullRepaintRequested) {
+					this.ctx.chatContainer.resetStableEmission();
+					this.ctx.ui.resetDisplay();
+				} else {
+					this.ctx.ui.requestRender();
+				}
 				const resolved = candidates.length > 0;
-				return { resolved, acted: resolved };
+				return { resolved, acted: resolved, emittedBlock: fullRepaintRequested };
 			}
-			if (candidates.length === 0) return { resolved: false, acted: false };
-			return { resolved: true, acted: this.#focusClickedAgent(candidates) };
+			if (candidates.length === 0) return { resolved: false, acted: false, emittedBlock: false };
+			return { resolved: true, acted: this.#focusClickedAgent(candidates), emittedBlock: false };
 		}
 		const clearedViewport = this.#clearViewportHover();
 		if (clearedViewport) this.ctx.ui.requestRender();
-		return { resolved: false, acted: false };
+		return { resolved: false, acted: false, emittedBlock: false };
 	}
 
 	/**
@@ -825,7 +865,9 @@ export class InputController {
 			counters.motionReportsResolved === logged.motionReportsResolved &&
 			counters.leftClicks === logged.leftClicks &&
 			counters.clicksResolved === logged.clicksResolved &&
-			counters.clicksResolvedNoAction === logged.clicksResolvedNoAction
+			counters.clicksResolvedNoAction === logged.clicksResolvedNoAction &&
+			counters.committedHistoryHits === logged.committedHistoryHits &&
+			counters.emittedBlockHits === logged.emittedBlockHits
 		) {
 			return;
 		}
@@ -844,6 +886,8 @@ export class InputController {
 		logged.leftClicks = counters.leftClicks;
 		logged.clicksResolved = counters.clicksResolved;
 		logged.clicksResolvedNoAction = counters.clicksResolvedNoAction;
+		logged.committedHistoryHits = counters.committedHistoryHits;
+		logged.emittedBlockHits = counters.emittedBlockHits;
 		this.#lastToolRowInteractionLogAt = now;
 	}
 

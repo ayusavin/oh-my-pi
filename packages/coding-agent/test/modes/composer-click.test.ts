@@ -1,14 +1,11 @@
 import { beforeAll, describe, expect, it } from "bun:test";
-import { COMPOSER_DEFAULTS, Composer } from "../../src/modes/composer";
+import { COMPOSER_DEFAULTS, Composer, resolveHistoryRowTarget } from "../../src/modes/composer";
 import { TranscriptContainer } from "../../src/modes/components/transcript-container";
 import { initTheme } from "../../src/modes/theme/theme";
 import { Container, type Component } from "@oh-my-pi/pi-tui";
 import { VirtualTerminal } from "../../../tui/test/virtual-terminal";
 import { routeViewportClick, routeViewportClickAction, type ViewportClickSpan } from "../../src/modes/composer";
-import {
-	type CompactToolGroupHolder,
-	mountCompactToolCall,
-} from "../../src/modes/components/tool-call-compact";
+import { type CompactToolGroupHolder, mountCompactToolCall } from "../../src/modes/components/tool-call-compact";
 
 function span(start: number, end: number, ids: string[]): ViewportClickSpan {
 	return { start, end, candidates: () => ids };
@@ -279,8 +276,26 @@ describe("composer click-to-toggle through a real renderFrame", () => {
 		try {
 			const transcript = new TranscriptContainer();
 			const holder: CompactToolGroupHolder = { current: undefined };
-			mountCompactToolCall(transcript, holder, "grouped", false, "call-1", "bash", { command: "echo one" }, undefined);
-			mountCompactToolCall(transcript, holder, "grouped", false, "call-2", "bash", { command: "echo two" }, undefined);
+			mountCompactToolCall(
+				transcript,
+				holder,
+				"grouped",
+				false,
+				"call-1",
+				"bash",
+				{ command: "echo one" },
+				undefined,
+			);
+			mountCompactToolCall(
+				transcript,
+				holder,
+				"grouped",
+				false,
+				"call-2",
+				"bash",
+				{ command: "echo two" },
+				undefined,
+			);
 			composer.setRuntimeChildren([transcript]);
 
 			const frame = composer.renderFrame({ columns: 80, rows: 24 });
@@ -306,6 +321,56 @@ describe("composer click-to-toggle through a real renderFrame", () => {
 		}
 	});
 
+	it("maps only a committed compact parent row to its stable target", () => {
+		const term = new VirtualTerminal(80, 24);
+		const composer = new Composer({ terminal: term, preferences: { ...COMPOSER_DEFAULTS, quiet: true } });
+		composer.start();
+		try {
+			const transcript = new TranscriptContainer();
+			const holder: CompactToolGroupHolder = { current: undefined };
+			mountCompactToolCall(
+				transcript,
+				holder,
+				"grouped",
+				false,
+				"call-1",
+				"bash",
+				{ command: "echo one" },
+				undefined,
+			);
+			mountCompactToolCall(
+				transcript,
+				holder,
+				"grouped",
+				false,
+				"call-2",
+				"bash",
+				{ command: "echo two" },
+				undefined,
+			);
+			const group = holder.current!;
+			group.seal();
+			transcript.addChild(new CountingBlock(["filler"]));
+			composer.setRuntimeChildren([transcript]);
+
+			const frame = composer.renderFrame({ columns: 80, rows: 1 });
+			const target = group.historyRowTarget(0);
+			expect(target).toBeDefined();
+			expect(frame.history?.targets?.[0]).toBe(target);
+			expect(frame.history?.targets?.[1]).toBeUndefined();
+			expect(resolveHistoryRowTarget(target!)).toBe(group);
+
+			group.toggleExpanded();
+			const expanded = group.render(80);
+			expect(expanded.length).toBeGreaterThan(1);
+			for (let local = 1; local < expanded.length; local++) {
+				expect(group.historyRowTarget(local)).toBeUndefined();
+			}
+		} finally {
+			composer.stop();
+		}
+	});
+
 	// Regression: the viewport click action composes the group's span-local
 	// offset when the group starts below viewport row 0. Only the parent row
 	// toggles the group; its rendered tool cards do not handle clicks.
@@ -316,8 +381,26 @@ describe("composer click-to-toggle through a real renderFrame", () => {
 		try {
 			const transcript = new TranscriptContainer();
 			const holder: CompactToolGroupHolder = { current: undefined };
-			mountCompactToolCall(transcript, holder, "grouped", false, "call-1", "bash", { command: "echo one" }, undefined);
-			mountCompactToolCall(transcript, holder, "grouped", false, "call-2", "bash", { command: "echo two" }, undefined);
+			mountCompactToolCall(
+				transcript,
+				holder,
+				"grouped",
+				false,
+				"call-1",
+				"bash",
+				{ command: "echo one" },
+				undefined,
+			);
+			mountCompactToolCall(
+				transcript,
+				holder,
+				"grouped",
+				false,
+				"call-2",
+				"bash",
+				{ command: "echo two" },
+				undefined,
+			);
 			const group = holder.current!;
 			group.updateResult({ content: [{ type: "text", text: "out one" }], isError: false }, false, "call-1");
 			group.updateResult({ content: [{ type: "text", text: "out two" }], isError: false }, false, "call-2");

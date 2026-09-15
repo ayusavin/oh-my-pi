@@ -6,7 +6,7 @@ import {
 	type TranscriptStableRow,
 } from "@oh-my-pi/pi-coding-agent/modes/components/transcript-container";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
-import type { Component } from "@oh-my-pi/pi-tui";
+import { Container, type Component } from "@oh-my-pi/pi-tui";
 
 class Block implements Component {
 	#rows: string[];
@@ -33,6 +33,26 @@ class Block implements Component {
 
 	render(): readonly string[] {
 		return this.#rows;
+	}
+}
+
+class AppendGroupWrapper extends Container {
+	readonly transcriptBlockMode = "appendOnly" as const;
+
+	constructor(private readonly stableRows: readonly string[]) {
+		super();
+	}
+
+	isTranscriptBlockFinalized(): boolean {
+		return false;
+	}
+
+	getTranscriptStableRows(): readonly TranscriptStableRow[] {
+		return this.stableRows.map(literalStableRow);
+	}
+
+	renderTranscriptStableRows(count: number, _width: number): readonly string[] {
+		return this.stableRows.slice(0, count);
 	}
 }
 
@@ -469,6 +489,50 @@ describe("TranscriptContainer", () => {
 		expect(transcript.canRemoveBlock(settled)).toBe(false);
 		transcript.removeChild(settled);
 		expect(transcript.blockStates()).toEqual(["committed", "active"]);
+	});
+
+	it("reports fresh and unknown blocks as unemitted", () => {
+		const transcript = new TranscriptContainer();
+		const fresh = new Block(["fresh"], false);
+		transcript.addChild(fresh);
+
+		expect(transcript.isBlockEmitted(fresh)).toBe(false);
+		expect(transcript.isBlockEmitted(new Block(["unknown"], false))).toBe(false);
+	});
+
+	it("reports blocks with emitted stable rows", () => {
+		const transcript = new TranscriptContainer();
+		const block = new AppendBlock(["stable", "partial"], ["stable"]);
+		transcript.addChild(block);
+
+		const batch = transcript.peekFinalizedBatch(80, 0)!;
+		transcript.acknowledgeFinalizedBatch(batch.id);
+
+		expect(transcript.isBlockEmitted(block)).toBe(true);
+	});
+
+	it("reports committed blocks as emitted", () => {
+		const transcript = new TranscriptContainer();
+		const block = new Block(["committed"], true);
+		transcript.addChild(block);
+
+		const batch = transcript.peekFinalizedBatch(80, 0)!;
+		transcript.acknowledgeFinalizedBatch(batch.id);
+
+		expect(transcript.isBlockEmitted(block)).toBe(true);
+	});
+
+	it("reports nested components of emitted group wrappers", () => {
+		const transcript = new TranscriptContainer();
+		const group = new AppendGroupWrapper(["nested"]);
+		const nested = new Block(["nested"], false);
+		group.addChild(nested);
+		transcript.addChild(group);
+
+		const batch = transcript.peekFinalizedBatch(80, 0)!;
+		transcript.acknowledgeFinalizedBatch(batch.id);
+
+		expect(transcript.isBlockEmitted(nested)).toBe(true);
 	});
 
 	it("replays committed history without rewinding lifecycle state", () => {

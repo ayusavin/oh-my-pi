@@ -203,27 +203,35 @@ keybinding (`app.mouse.toggle`, default `alt+s`) therefore releases capture and 
 the release wins over `tui.mouse`. Proof is the pty byte stream: the terminal must see
 `\x1b[?1003l\x1b[?1000l` on release and `\x1b[?1000h\x1b[?1003h` on retake.
 
-**C12. Interaction is live-viewport only.** A compact tool-group row committed to normal-buffer history
-is inert: it has no hover mark and no click action. Committed scrollback cannot be repainted — Warp in
-particular never shows a hover mark there — and the former behaviour of raising a mutable copy at the
-live bottom produced a visible duplicate of the group. A committed row therefore stays exactly as
-printed; only rows still in the live mutable viewport respond.
+**C12. A visible group row stays clickable after its rows leave the mutable viewport.** Rows still owned
+by the live mutable viewport toggle through an ordinary render. A row whose transcript block already
+emitted stable rows into normal-buffer history cannot be rewritten that way, so a click there drops the
+emission ledger (`TranscriptContainer.resetStableEmission()`) and re-emits the display
+(`resetDisplay()`), the same path the thinking-visibility toggle uses. The decision is read from
+`TranscriptContainer.isBlockEmitted(owner)` for the clicked span's owning component, never from screen
+geometry: a row can sit inside the viewport window and still have its head bytes in scrollback, and that
+mismatch is exactly what made a click flip state behind an unchanged screen. A click never raises a
+mutable copy of the group — that produced a visible duplicate — so the summary-row count stays at one
+across every toggle. Hover marks remain live-viewport only, and Warp never shows one because it sends no
+motion reports.
 
 Evidence, live pty run 2026-09-15 against the freshly built binary
-(`scripts/.pty-parent-toggle-probe.ts`, 150x45): the collapsed parent row was
-`▸ • 3 shell commands`; hover painted all 150 columns of that row; the parent click expanded cards
-showing `$ echo toggle-command-one` and its `toggle-command-one` output; a click on a card row left
-the screen byte-identical and logged
-`{"message":"tool row click","row":4,"resolved":false,"acted":false}`; the second parent click
-restored the one-line summary; after the group scrolled out of the live viewport, the summary-row count
-never grew past one. `scripts/.pty-mouse-toggle-probe.ts` reports 5/5 for C11.
+(`scripts/.pty-parent-toggle-probe.ts`, 150x45): the collapsed parent row was `▸ • 2 shell commands`;
+hover painted all 150 columns of that row; the parent click expanded cards showing
+`$ echo toggle-command-two` and its output; the second parent click restored the one-line summary; after
+a transcript push moved the summary row to screen row 20, a click expanded it again and a further click
+collapsed it, with the summary-row count at one in every frame. The repaint decision itself is pinned by
+`test/input-controller-click-routing.test.ts`: a not-yet-emitted owner takes one `requestRender()` and no
+reset, an emitted owner takes `resetStableEmission()` + `resetDisplay()` and no plain render.
+`scripts/.pty-mouse-toggle-probe.ts` reports 5/5 for C11.
 
 **C13. Observability records interaction transitions.** `logger.debug` emits `tool row click` with
-`row`, `resolved`, and `acted` once per click; `tool row toggle` with `calls` and `expanded` once per
+`row`, `source` (`live-viewport`, `emitted-block`, `committed-history`, or `none`), `resolved`, and
+`acted` once per click; `tool row toggle` with `calls`, `expanded`, and `fullRepaintRequested` once per
 toggle; `mouse capture` with `capture` and `suspended` once per capture transition; and the `tool row
 interaction` aggregate at most every 30s only when a counter advanced, plus once on teardown. Motion is
 counted, never logged per event. Its counters distinguish `the terminal sends no motion` from `no row
-resolved`.
+resolved`, and count emitted-block and committed-history hits separately from live-viewport ones.
 
 ### Evidence for this contract
 
@@ -271,9 +279,10 @@ resolved`.
   internal layout or a hover style, so this fork's decision fills a gap upstream leaves undocumented.
 - **2026-09-14, this fork's own local proof, not Claude Code evidence** — the original `--resume`
   proof reported that a compact tool-group row in normal-buffer history was targetable while physically
-  visible and that a click raised a mutable copy at the live transcript bottom. That proof is
-  superseded by the 2026-09-15 inert-history decision in C12: committed rows remain exactly as printed
-  and are not interactive.
+  visible and that a click raised a mutable copy at the live transcript bottom. The raise-a-copy
+  mechanism stays rejected (it duplicated the group), but the 2026-09-15 inert-history decision that
+  replaced it is itself superseded by the repaint path in C12: a visible row keeps toggling after its
+  rows reach scrollback, by dropping the emission ledger and re-emitting the display.
 
 ## Build notes, from the retired `tools/omp-local/` build
 

@@ -90,6 +90,7 @@ const MAX_LIVE_BLOCKS = 256;
 const PINNED_FRONTIER_WARN_MS = 30_000;
 const EMPTY_ROWS: readonly string[] = [];
 const EMPTY_STABLE_ROWS: readonly TranscriptStableRow[] = [];
+const EMPTY_HISTORY_ROW_TARGETS: readonly (TranscriptHistoryRowTarget | undefined)[] = [];
 function isFinalized(component: Component): boolean {
 	const block = component as Component & FinalizableBlock;
 	return block.isTranscriptBlockFinalized?.() ?? true;
@@ -145,6 +146,12 @@ export interface TranscriptViewportSpan {
 	offset: number;
 }
 
+/** Owner and component-local row for one emitted history row. */
+export interface TranscriptHistoryRowTarget {
+	readonly component: Component;
+	readonly local: number;
+}
+
 /** Owns transcript order, live capacity, and ordered immutable retirement. */
 export class TranscriptContainer extends Container {
 	#entries: TranscriptEntry[] = [];
@@ -166,6 +173,8 @@ export class TranscriptContainer extends Container {
 	#pinnedFrontier: { index: number; since: number; logged: boolean } | undefined;
 	/** Block spans of the last `renderViewport` output, for click hit-testing. */
 	#lastViewportSpans: TranscriptViewportSpan[] = [];
+	/** Owners of the physical rows in the most recently offered history batch. */
+	#lastHistoryTargets: readonly (TranscriptHistoryRowTarget | undefined)[] = EMPTY_HISTORY_ROW_TARGETS;
 
 	override addChild(component: Component): void {
 		if (isToolActivityComponent(component)) component.setToolActivityVisible(this.#toolActivityVisible);
@@ -225,6 +234,7 @@ export class TranscriptContainer extends Container {
 	resetStableEmission(): void {
 		this.#syncEntries();
 		if (this.#offered?.kind === "append") this.#offered = undefined;
+		this.#lastHistoryTargets = EMPTY_HISTORY_ROW_TARGETS;
 		for (const entry of this.#entries) {
 			entry.emitted = 0;
 			entry.stableRows = EMPTY_STABLE_ROWS;
@@ -246,6 +256,19 @@ export class TranscriptContainer extends Container {
 		if (this.#offered?.kind === "commit" && index < this.#offered.end) return false;
 		if (this.#offered?.kind === "append" && index === this.#offered.entry) return false;
 		return true;
+	}
+	/** Whether a block has emitted rows that require replay to change. */
+	isBlockEmitted(component: Component): boolean {
+		this.#syncEntries();
+		const entry = this.#entries.find(entry => {
+			if (entry.component === component) return true;
+			return (
+				"children" in entry.component &&
+				Array.isArray(entry.component.children) &&
+				entry.component.children.includes(component)
+			);
+		});
+		return entry !== undefined && (entry.state === "committed" || entry.emitted > 0);
 	}
 
 	/** Lifecycle state per block in transcript order (diagnostics and tests). */
@@ -308,6 +331,11 @@ export class TranscriptContainer extends Container {
 	/** Block spans of the last `renderViewport` output, in output coordinates. Empty when the tail is empty. */
 	getLastViewportSpans(): readonly TranscriptViewportSpan[] {
 		return this.#lastViewportSpans;
+	}
+
+	/** Owners of the physical rows in the most recently offered history batch. */
+	getLastHistoryTargets(): readonly (TranscriptHistoryRowTarget | undefined)[] {
+		return this.#lastHistoryTargets;
 	}
 
 	/** Collapse a per-line owner list into run-length block spans, clamped to
@@ -468,6 +496,7 @@ export class TranscriptContainer extends Container {
 			const before = this.#renderStablePrefix(entry, entry.emitted, width);
 			const after = this.#renderStablePrefix(entry, offered.emittedEnd, width);
 			rows = after.slice(before.length);
+			this.#noteAppendTargets(entry.component, before.length, rows);
 		} else if (offered.kind === "commit") {
 			rows = this.#renderRange(this.#frontier, offered.end, width, true);
 		} else {
@@ -528,6 +557,7 @@ export class TranscriptContainer extends Container {
 				return undefined;
 			}
 			const rows = after.slice(before.length);
+			this.#noteAppendTargets(head.component, before.length, rows);
 			const batch: HistoryBatch = {
 				id: this.#nextBatchId++,
 				rows,
@@ -704,8 +734,17 @@ export class TranscriptContainer extends Container {
 		});
 	}
 
+	#noteAppendTargets(component: Component, firstLocal: number, rows: readonly string[]): void {
+		const targets: TranscriptHistoryRowTarget[] = [];
+		for (let row = 0; row < rows.length; row++) {
+			targets.push({ component, local: firstLocal + row });
+		}
+		this.#lastHistoryTargets = targets;
+	}
+
 	#renderRange(start: number, end: number, width: number, trailingBlank: boolean): readonly string[] {
 		const rows: string[] = [];
+		const targets: Array<TranscriptHistoryRowTarget | undefined> = [];
 		// A range head whose rows already went out row by row contributes nothing
 		// here, yet its rows are on screen: the next block still needs the blank
 		// that separates two blocks, or it lands flush against them.
@@ -728,20 +767,25 @@ export class TranscriptContainer extends Container {
 			const continuing = index === start && emittedRows > 0;
 			if (rows.length > 0 || emittedAbove || (this.#emissionOpen && !continuing)) {
 				rows.push("");
+				targets.push(undefined);
 			}
 			emittedAbove = false;
 			for (let row = 0; row < block.length; row++) {
 				rows.push(block[row]!);
+				targets.push({ component: entry.component, local: emittedRows + row });
 			}
 		}
 		if (trailingBlank && rows.length > 0) {
 			rows.push("");
+			targets.push(undefined);
 		}
+		this.#lastHistoryTargets = targets;
 		return rows;
 	}
 
 	#renderReplay(width: number): readonly string[] {
 		const rows = Array.from(this.#renderRange(0, this.#frontier, width, true));
+		const targets = Array.from(this.#lastHistoryTargets);
 		const head = this.#entries[this.#frontier];
 		if (head?.mode === "appendOnly" && head.emitted > 0) {
 			this.#setAllocation(head.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
@@ -749,8 +793,10 @@ export class TranscriptContainer extends Container {
 			const prefix = this.#renderStablePrefix(head, head.emitted, width);
 			for (let row = 0; row < prefix.length; row++) {
 				rows.push(prefix[row]!);
+				targets.push({ component: head.component, local: row });
 			}
 		}
+		this.#lastHistoryTargets = targets;
 		return rows;
 	}
 

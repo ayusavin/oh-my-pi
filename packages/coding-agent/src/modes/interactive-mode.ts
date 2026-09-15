@@ -989,8 +989,12 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.composer.viewportClickCandidates(index);
 	}
 
-	resolveViewportClickAction(index: number): ((local: number) => void) | undefined {
+	resolveViewportClickAction(index: number): ((local: number, fullRepaintRequested?: boolean) => void) | undefined {
 		return this.composer.viewportClickAction(index);
+	}
+
+	resolveViewportClickOwner(index: number): Component | undefined {
+		return this.composer.viewportClickOwner(index);
 	}
 
 	/** Flip the pinned jump list between its collapsed few and the full list, overriding the setting. */

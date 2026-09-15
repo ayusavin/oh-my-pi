@@ -23,6 +23,7 @@ import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Container, Text } from "@oh-my-pi/pi-tui";
 import { formatDuration, logger } from "@oh-my-pi/pi-utils";
+import type { HistoryRowTargetProvider } from "../types";
 import { theme } from "../../modes/theme/theme";
 import { TRUNCATE_LENGTHS, type ToolUIStatus } from "../../tools/render-utils";
 import { type ToolActivitySummary, toolRenderers } from "../../tools/renderers";
@@ -263,6 +264,16 @@ const EMBEDDED_CARD_UI: ToolExecutionUi = {
 /** Monotonic per-parent hover id. */
 let nextCompactToggleId = 1;
 
+/** Opaque per-instance token retained by a committed parent row. */
+class CompactToolCallHistoryTarget {
+	constructor(readonly component: CompactToolCallComponent) {}
+}
+
+/** Resolves a committed-row token without retaining a separate target registry. */
+export function resolveCompactToolCallHistoryTarget(target: object): CompactToolCallComponent | undefined {
+	return target instanceof CompactToolCallHistoryTarget ? target.component : undefined;
+}
+
 /**
  * Compact (`display.toolCalls: "compact"`) and grouped (`"grouped"`) tool-call
  * row. A one-call instance uses its call row as the parent; a multi-call
@@ -276,7 +287,7 @@ let nextCompactToggleId = 1;
  * the group to new entries without forcing a still-pending entry done;
  * `seal()` forces it done regardless.
  */
-export class CompactToolCallComponent extends Container implements ToolExecutionHandle {
+export class CompactToolCallComponent extends Container implements ToolExecutionHandle, HistoryRowTargetProvider {
 	#entries = new Map<string, CompactCallEntry>();
 	/** Number of width-aware physical segments occupied by the parent row in
 	 * the latest live render. */
@@ -290,6 +301,7 @@ export class CompactToolCallComponent extends Container implements ToolExecution
 	 * session-wide `#expanded` baseline. */
 	#rowExpanded: boolean | undefined;
 	#clickId = `@omp:compact-toggle:${nextCompactToggleId++}`;
+	#historyTarget = new CompactToolCallHistoryTarget(this);
 	#toolActivityVisible = true;
 	// Closed to new entries. Distinct from `#sealed`: a `finalize()`d group
 	// with a still-pending entry is not yet transcript-finalized because its
@@ -380,10 +392,10 @@ export class CompactToolCallComponent extends Container implements ToolExecution
 	}
 
 	/** Toggle the parent relative to its currently visible state. */
-	toggleExpanded(): void {
+	toggleExpanded(fullRepaintRequested = false): void {
 		const expanded = !this.#effectiveExpanded();
 		this.#setClickedExpansion(expanded);
-		logger.debug("tool row toggle", { calls: this.#entries.size, expanded });
+		logger.debug("tool row toggle", { calls: this.#entries.size, expanded, fullRepaintRequested });
 	}
 
 	setToolActivityVisible(visible: boolean): void {
@@ -410,10 +422,15 @@ export class CompactToolCallComponent extends Container implements ToolExecution
 		return this.#lastParentRowCount === 0 ? local === 0 : local < this.#lastParentRowCount;
 	}
 
+	/** Stable target for the parent row's physical segments; cards have no target. */
+	historyRowTarget(local: number): object | undefined {
+		return this.#isParentRow(local) ? this.#historyTarget : undefined;
+	}
+
 	/** Resolve a live parent-row target. Cards are never click or hover targets. */
-	#rowTarget(local: number): { id: string; onClick: () => void } | undefined {
+	#rowTarget(local: number, fullRepaintRequested = false): { id: string; onClick: () => void } | undefined {
 		if (!this.#isParentRow(local)) return undefined;
-		return { id: this.#clickId, onClick: () => this.toggleExpanded() };
+		return { id: this.#clickId, onClick: () => this.toggleExpanded(fullRepaintRequested) };
 	}
 
 	/** Every physical segment of the parent shares one hover candidate; cards
@@ -425,11 +442,11 @@ export class CompactToolCallComponent extends Container implements ToolExecution
 	}
 
 	/** Parent-row click action. */
-	getViewportClickAction(): ((local: number) => void) | undefined {
+	getViewportClickAction(): ((local: number, fullRepaintRequested?: boolean) => void) | undefined {
 		if (this.#entries.size === 0) return undefined;
-		return (local: number) => {
+		return (local: number, fullRepaintRequested?: boolean) => {
 			const row = Number.isInteger(local) && local >= 0 ? local : 0;
-			this.#rowTarget(row)?.onClick();
+			this.#rowTarget(row, fullRepaintRequested)?.onClick();
 		};
 	}
 

@@ -116,6 +116,11 @@ export interface AgentHubOpenOptions {
 	initialSection?: "agents" | "activity";
 }
 
+/** Transcript block capability for resolving an emitted local row to an opaque interaction target. */
+export interface HistoryRowTargetProvider {
+	historyRowTarget(local: number): object | undefined;
+}
+
 export interface InteractiveModeContext {
 	// UI access
 	ui: TUI;
@@ -162,7 +167,9 @@ export interface InteractiveModeContext {
 	/** Click action under a mutable-viewport line, when the hit span owns one
 	 * (e.g. a compact tool row's own expand/collapse). Tried before
 	 * `resolveViewportClickCandidates`-based focus routing. */
-	resolveViewportClickAction(index: number): ((local: number) => void) | undefined;
+	resolveViewportClickAction(index: number): ((local: number, fullRepaintRequested?: boolean) => void) | undefined;
+	/** Transcript component owning a mutable-viewport line, if any. */
+	resolveViewportClickOwner(index: number): Component | undefined;
 	/** Flip the pinned jump list between its collapsed few and the full list. */
 	togglePinnedHudExpanded(): void;
 	/** Rebuild the pinned jump list for a `display.pinnedAgents` change. */

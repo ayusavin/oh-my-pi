@@ -6,9 +6,15 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
+import { Text } from "@oh-my-pi/pi-tui";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { Composer } from "@oh-my-pi/pi-coding-agent/modes/composer";
+import {
+	Composer,
+	routeViewportClickAction,
+	routeViewportClickOwner,
+	type ViewportClickSpan,
+} from "@oh-my-pi/pi-coding-agent/modes/composer";
 import { CompactToolCallComponent } from "@oh-my-pi/pi-coding-agent/modes/components/tool-call-compact";
 import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
@@ -21,6 +27,33 @@ import { VirtualTerminal } from "../../tui/test/virtual-terminal";
 function plainRows(rows: readonly string[]): string[] {
 	return rows.map(row => Bun.stripANSI(row).trimEnd());
 }
+
+describe("compact row click span routing", () => {
+	it("returns an owner only for rows inside its span", () => {
+		const owner = new Text("owner");
+		const spans: ViewportClickSpan[] = [{ start: 2, end: 4, candidates: () => [], owner }];
+
+		expect(routeViewportClickOwner(spans, 3)).toBe(owner);
+		expect(routeViewportClickOwner(spans, 4)).toBeUndefined();
+	});
+
+	it("routes an action without a span owner", () => {
+		let hitLocal = -1;
+		const spans: ViewportClickSpan[] = [
+			{
+				start: 2,
+				end: 4,
+				candidates: () => [],
+				action: local => {
+					hitLocal = local;
+				},
+			},
+		];
+
+		routeViewportClickAction(spans, 3)!(99);
+		expect(hitLocal).toBe(1);
+	});
+});
 
 describe("compact row click geometry", () => {
 	let tempDir: TempDir;
@@ -99,6 +132,50 @@ describe("compact row click geometry", () => {
 		return group;
 	}
 
+	async function commitGroup(group: CompactToolCallComponent): Promise<CompactToolCallComponent[]> {
+		const fillers: CompactToolCallComponent[] = [];
+		for (let index = 0; index < 40; index++) {
+			const filler = addGroup(
+				"bash",
+				"Bash",
+				{ command: `echo filler-${index}-one` },
+				{ command: `echo filler-${index}-two` },
+				undefined,
+				true,
+			);
+			fillers.push(filler);
+			mode.ui.requestRender();
+			await term.waitForRender();
+			if (!mode.chatContainer.canRemoveBlock(group)) return fillers;
+		}
+		throw new Error(`Expected group ${group.render(40).join("\n")} to enter committed history`);
+	}
+
+	async function revealCommittedGroup(
+		group: CompactToolCallComponent,
+		fillers: readonly CompactToolCallComponent[],
+	): Promise<number> {
+		for (const filler of fillers) {
+			if (mode.chatContainer.canRemoveBlock(filler)) mode.chatContainer.removeChild(filler);
+		}
+		const target = group.historyRowTarget(0);
+		if (target === undefined) throw new Error("Expected a compact parent target");
+		mode.chatContainer.resetStableEmission();
+		mode.ui.resetDisplay();
+		await term.waitForRender(() => {
+			const mutable = mode.ui.getMutableViewport();
+			for (let row = 0; row < mutable.top; row++) {
+				if (mode.ui.historyRowTarget(row) === target) return true;
+			}
+			return false;
+		});
+		const mutable = mode.ui.getMutableViewport();
+		for (let row = 0; row < mutable.top; row++) {
+			if (mode.ui.historyRowTarget(row) === target) return row;
+		}
+		throw new Error("Expected committed parent target to remain on screen");
+	}
+
 	it("expands and collapses every card from the same live parent row", async () => {
 		await mode.init({ suppressWelcomeIntro: true });
 		void mode.getUserInput();
@@ -132,6 +209,79 @@ describe("compact row click geometry", () => {
 		term.sendInput(`\x1b[<0;1;${expandedParentRow + 1}M`);
 		await term.waitForRender(() => !plainRows(term.getViewport()).some(row => row.includes("grep out one")));
 		expect(group.render(120)).toHaveLength(1);
+	});
+
+	it("toggles a visible committed group by resetting and replaying the transcript", async () => {
+		await mode.init({ suppressWelcomeIntro: true });
+		void mode.getUserInput();
+		await term.waitForRender();
+
+		const group = addGroup(
+			"grep",
+			"Grep",
+			{ pattern: "committed-one", path: "src" },
+			{ pattern: "committed-two", path: "src" },
+			"committed",
+			true,
+		);
+		const parentRow = await revealCommittedGroup(group, await commitGroup(group));
+		expect(group.render(120)).toHaveLength(1);
+
+		term.sendInput(`\x1b[<0;1;${parentRow + 1}M`);
+		await term.waitForRender(() => {
+			const rows = plainRows(term.getViewport());
+			return (
+				rows.some(row => row.includes("committed out one")) && rows.some(row => row.includes("committed out two"))
+			);
+		});
+
+		expect(group.render(120).length).toBeGreaterThan(1);
+	});
+
+	it("leaves committed card and non-group rows inert", async () => {
+		await mode.init({ suppressWelcomeIntro: true });
+		void mode.getUserInput();
+		await term.waitForRender();
+
+		mode.chatContainer.addChild(new Text("committed non-group row"));
+		const group = addGroup(
+			"grep",
+			"Grep",
+			{ pattern: "inert-one", path: "src" },
+			{ pattern: "inert-two", path: "src" },
+			"inert",
+			true,
+		);
+		await revealCommittedGroup(group, await commitGroup(group));
+
+		group.setExpanded(true);
+		mode.chatContainer.resetStableEmission();
+		mode.ui.resetDisplay();
+		await term.waitForRender(() => {
+			const rows = plainRows(term.getViewport());
+			return (
+				rows.some(row => row.includes("inert out one")) && rows.some(row => row.includes("committed non-group row"))
+			);
+		});
+
+		const rows = plainRows(term.getViewport());
+		const cardRow = rows.findIndex(row => row.includes("inert out one"));
+		const nonGroupRow = rows.findIndex(row => row.includes("committed non-group row"));
+		expect(cardRow).toBeGreaterThanOrEqual(0);
+		expect(nonGroupRow).toBeGreaterThanOrEqual(0);
+		const mutable = mode.ui.getMutableViewport();
+		expect(cardRow).toBeLessThan(mutable.top);
+		expect(nonGroupRow).toBeLessThan(mutable.top);
+		expect(mode.ui.historyRowTarget(cardRow)).toBeUndefined();
+		expect(mode.ui.historyRowTarget(nonGroupRow)).toBeUndefined();
+
+		const expandedRows = group.render(120);
+		term.sendInput(`\x1b[<0;1;${cardRow + 1}M`);
+		await term.waitForRender();
+		expect(group.render(120)).toEqual(expandedRows);
+		term.sendInput(`\x1b[<0;1;${nonGroupRow + 1}M`);
+		await term.waitForRender();
+		expect(group.render(120)).toEqual(expandedRows);
 	});
 
 	it("toggles a group from a wrapped physical parent segment", async () => {

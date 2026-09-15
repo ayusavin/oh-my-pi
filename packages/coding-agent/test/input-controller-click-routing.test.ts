@@ -14,12 +14,21 @@ const ESC = String.fromCharCode(27);
 const TOOL_ROW_CLICK = `${ESC}[<0;5;2M`;
 const EXPANDER_CLICK = `${ESC}[<0;5;3M`;
 
+const OWNER = {} as object;
+
 function makeHarness(overrides?: {
 	resolveViewportClickAction?: (index: number) => ((local: number) => void) | undefined;
+	/** Owner reported for every viewport row, as the composer's span would. */
+	owner?: object;
+	/** Whether that owner's transcript block already emitted stable rows. */
+	emitted?: boolean;
 }) {
 	const listeners: Array<(data: string) => { consume?: boolean; data?: string } | undefined> = [];
 	const focused: string[] = [];
 	let toggled = 0;
+	let renders = 0;
+	let displayResets = 0;
+	let stableResets = 0;
 	const ctx = {
 		ui: {
 			addInputListener: (fn: (data: string) => { consume?: boolean; data?: string } | undefined) => {
@@ -27,9 +36,15 @@ function makeHarness(overrides?: {
 			},
 			getMutableViewport: () => ({ top: 0, length: 5 }),
 			hasOverlay: () => false,
-			requestRender: () => {},
+			requestRender: () => {
+				renders++;
+			},
+			resetDisplay: () => {
+				displayResets++;
+			},
 			addStartListener: () => {},
 			getFocused: () => undefined,
+			historyRowTarget: () => undefined,
 		},
 		handlesBtwBranchKey: () => false,
 		editor: {
@@ -53,6 +68,13 @@ function makeHarness(overrides?: {
 		},
 		showStatus: () => {},
 		setClickHoverId: () => {},
+		resolveViewportClickOwner: () => overrides?.owner,
+		chatContainer: {
+			isBlockEmitted: (component: object) => component === overrides?.owner && overrides?.emitted === true,
+			resetStableEmission: () => {
+				stableResets++;
+			},
+		},
 	} as unknown as InteractiveModeContext;
 	const controller = new InputController(ctx);
 	controller.setupKeyHandlers();
@@ -63,6 +85,9 @@ function makeHarness(overrides?: {
 		},
 		focused,
 		toggled: () => toggled,
+		renders: () => renders,
+		displayResets: () => displayResets,
+		stableResets: () => stableResets,
 	};
 }
 
@@ -138,5 +163,31 @@ describe("InputController click routing", () => {
 		h.click();
 		expect(actionToggled).toBe(0);
 		expect(h.focused).toEqual([]);
+	});
+
+	// A tool row whose block still owns its rows in the mutable viewport is
+	// repainted by the ordinary render; clearing scrollback there would throw
+	// away native history on every expand.
+	it("repaints a not-yet-emitted block with a plain render", () => {
+		const h = makeHarness({
+			resolveViewportClickAction: (index: number) => (index === 1 ? () => {} : undefined),
+			owner: OWNER,
+			emitted: false,
+		});
+		h.click(TOOL_ROW_CLICK);
+		expect([h.renders(), h.stableResets(), h.displayResets()]).toEqual([1, 0, 0]);
+	});
+
+	// Once the block emitted rows into native scrollback, a plain render can no
+	// longer rewrite them: the emission ledger must be dropped and the display
+	// re-emitted, or the click flips state behind an unchanged screen.
+	it("re-emits the transcript when the clicked block already emitted rows", () => {
+		const h = makeHarness({
+			resolveViewportClickAction: (index: number) => (index === 1 ? () => {} : undefined),
+			owner: OWNER,
+			emitted: true,
+		});
+		h.click(TOOL_ROW_CLICK);
+		expect([h.renders(), h.stableResets(), h.displayResets()]).toEqual([0, 1, 1]);
 	});
 });

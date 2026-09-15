@@ -15,9 +15,11 @@ import {
 import { sliceWithWidth, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui/utils";
 import { CustomEditor } from "./components/custom-editor";
 import { type AnimationFrame, TranscriptContainer } from "./components/transcript-container";
+import type { HistoryRowTargetProvider } from "./types";
 import { type LspServerInfo, type RecentSession, WelcomeComponent } from "./components/welcome";
 import { getEditorTheme, initThemeSync, theme } from "./theme/theme";
 
+export { resolveCompactToolCallHistoryTarget as resolveHistoryRowTarget } from "./components/tool-call-compact";
 const DOUBLE_INTERRUPT_MS = 500;
 
 /** Live settings that affect the composer before and after session adoption. */
@@ -136,11 +138,13 @@ export interface ViewportClickSpan {
 	end: number;
 	/** Candidate subagent ids for a span-local row. */
 	candidates: (local: number) => string[];
+	/** Transcript component that owns the span's rows, used to decide whether a click needs a full repaint. */
+	owner?: Component;
 	/** Click action for a span-local row, when the span owns one (e.g. a
 	 * compact tool row's own expand/collapse). Takes precedence over
 	 * `candidates`-based focus routing so a non-agent click target never
 	 * falls through to subagent-focus resolution. */
-	action?: (local: number) => void;
+	action?: (local: number, fullRepaintRequested?: boolean) => void;
 }
 
 /**
@@ -182,14 +186,28 @@ export function routeViewportClick(spans: readonly ViewportClickSpan[], index: n
 export function routeViewportClickAction(
 	spans: readonly ViewportClickSpan[],
 	index: number,
-): ((local: number) => void) | undefined {
+): ((local: number, fullRepaintRequested?: boolean) => void) | undefined {
 	if (!Number.isInteger(index) || index < 0) return undefined;
 	for (const span of spans) {
 		if (index < span.start || index >= span.end) continue;
 		const action = span.action;
 		if (!action) return undefined;
 		const spanLocal = index - span.start;
-		return () => action(spanLocal);
+		return (_local, fullRepaintRequested) => action(spanLocal, fullRepaintRequested);
+	}
+	return undefined;
+}
+
+/**
+ * Transcript owner under a mutable-viewport line: the first span containing
+ * it. Pure seam for tests; an owner without a click action remains undefined
+ * to action routing while still identifying rows that require replay.
+ */
+export function routeViewportClickOwner(spans: readonly ViewportClickSpan[], index: number): Component | undefined {
+	if (!Number.isInteger(index) || index < 0) return undefined;
+	for (const span of spans) {
+		if (index < span.start || index >= span.end) continue;
+		return span.owner;
 	}
 	return undefined;
 }
@@ -255,6 +273,7 @@ export class Composer implements TerminalFrameProvider {
 				id: number;
 				rows: readonly string[];
 				kind: "append" | "replay";
+				targets?: readonly (object | undefined)[];
 				source:
 					| "header"
 					| {
@@ -417,7 +436,7 @@ export class Composer implements TerminalFrameProvider {
 		for (const span of transcript.getLastViewportSpans()) {
 			const target = span.component as Partial<{
 				getClickFocusAgentIds(local?: number): string[];
-				getViewportClickAction(): ((local: number) => void) | undefined;
+				getViewportClickAction(): ((local: number, fullRepaintRequested?: boolean) => void) | undefined;
 			}>;
 			// The pre-check stays a single no-arg call (existing components that
 			// never take `local` — e.g. a live subagent's own task card — answer it
@@ -428,6 +447,7 @@ export class Composer implements TerminalFrameProvider {
 			const action = target.getViewportClickAction?.();
 			if ((!ids || ids.length === 0) && action === undefined) continue;
 			activeSpans.push({
+				owner: span.component,
 				start: span.start,
 				end: span.end,
 				// `span.offset` names the component's own leading rows this frame
@@ -435,7 +455,9 @@ export class Composer implements TerminalFrameProvider {
 				// top under capacity pressure). Without adding it back, a click or
 				// hover inside a clipped block addresses a different row of it.
 				candidates: (local: number) => target.getClickFocusAgentIds?.(local + span.offset) ?? [],
-				action: action ? (local: number) => action(local + span.offset) : undefined,
+				action: action
+					? (local: number, fullRepaintRequested?: boolean) => action(local + span.offset, fullRepaintRequested)
+					: undefined,
 			});
 		}
 		const drop = Math.max(0, before.length + active.length + after.length - rows);
@@ -457,8 +479,11 @@ export class Composer implements TerminalFrameProvider {
 				spans.push({
 					start: clamped,
 					end,
+					owner: span.owner,
 					candidates: (local: number) => span.candidates(local + skew),
-					action: action ? (local: number) => action(local + skew) : undefined,
+					action: action
+						? (local: number, fullRepaintRequested?: boolean) => action(local + skew, fullRepaintRequested)
+						: undefined,
 				});
 			}
 		};
@@ -515,8 +540,13 @@ export class Composer implements TerminalFrameProvider {
 	 * (e.g. a compact tool row's own expand/collapse) — tried before
 	 * candidate-based focus routing.
 	 */
-	viewportClickAction(index: number): ((local: number) => void) | undefined {
+	viewportClickAction(index: number): ((local: number, fullRepaintRequested?: boolean) => void) | undefined {
 		return routeViewportClickAction(this.#lastClickSpans, index);
+	}
+
+	/** Transcript component owning a mutable-viewport line, if any. */
+	viewportClickOwner(index: number): Component | undefined {
+		return routeViewportClickOwner(this.#lastClickSpans, index);
 	}
 
 	/**
@@ -620,10 +650,13 @@ export class Composer implements TerminalFrameProvider {
 			const recomposed = this.#header.render(width);
 			const headerRows = recomposed.length > 0 ? [...recomposed, ""] : this.#reflowRetiredHeader(width, 0);
 			const transcriptRows = transcriptReplay?.rows ?? [];
+			const transcriptTargets = this.#historyTargets(transcript, transcriptRows);
 			this.#offeredHistory = {
 				id: this.#nextHistoryId++,
 				rows: [...headerRows, ...transcriptRows],
 				kind: "replay",
+				targets:
+					transcriptTargets === undefined ? undefined : [...headerRows.map(() => undefined), ...transcriptTargets],
 				source: {
 					transcript,
 					transcriptId: transcriptReplay?.id,
@@ -662,6 +695,7 @@ export class Composer implements TerminalFrameProvider {
 			id: this.#nextHistoryId++,
 			rows: batch.rows,
 			kind: batch.kind ?? "append",
+			targets: this.#historyTargets(transcript, batch.rows),
 			source: { transcript, transcriptId: batch.id, header: "none" },
 		};
 		return this.#historyOffer();
@@ -670,11 +704,39 @@ export class Composer implements TerminalFrameProvider {
 	#historyOffer(): TerminalFramePlan["history"] {
 		const offered = this.#offeredHistory;
 		if (offered === undefined) return undefined;
+		if (offered.targets === undefined) {
+			return {
+				id: offered.id,
+				rows: offered.rows,
+				kind: offered.kind,
+			};
+		}
 		return {
 			id: offered.id,
 			rows: offered.rows,
 			kind: offered.kind,
+			targets: offered.targets,
 		};
+	}
+
+	#historyTargets(
+		transcript: TranscriptContainer,
+		rows: readonly string[],
+	): readonly (object | undefined)[] | undefined {
+		const owners = transcript.getLastHistoryTargets();
+		if (owners.length !== rows.length) return undefined;
+		let targets: (object | undefined)[] | undefined;
+		for (let index = 0; index < owners.length; index++) {
+			const owner = owners[index];
+			if (owner === undefined) continue;
+			const provider = owner.component as Partial<HistoryRowTargetProvider>;
+			if (typeof provider.historyRowTarget !== "function") continue;
+			const target = provider.historyRowTarget(owner.local);
+			if (target === undefined) continue;
+			if (targets === undefined) targets = rows.map(() => undefined);
+			targets[index] = target;
+		}
+		return targets;
 	}
 
 	#rerenderOfferedHistory(width: number): void {
@@ -689,6 +751,7 @@ export class Composer implements TerminalFrameProvider {
 		if (offered.source.header === "none") {
 			if (transcript === undefined) return;
 			offered.rows = transcript.rows;
+			offered.targets = this.#historyTargets(offered.source.transcript, transcript.rows);
 			return;
 		}
 		const recomposed = this.#header.render(width);
@@ -696,8 +759,11 @@ export class Composer implements TerminalFrameProvider {
 		const transcriptRows = transcript?.rows ?? [];
 		offered.source.headerRows = headerRows;
 		offered.rows = [...headerRows, ...transcriptRows];
+		const transcriptTargets =
+			transcript === undefined ? undefined : this.#historyTargets(offered.source.transcript, transcriptRows);
+		offered.targets =
+			transcriptTargets === undefined ? undefined : [...headerRows.map(() => undefined), ...transcriptTargets];
 	}
-
 	#renderRoots(roots: readonly Component[], width: number): string[] {
 		const rows: string[] = [];
 		for (const root of roots) rows.push(...root.render(width));
