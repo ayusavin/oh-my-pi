@@ -109,7 +109,8 @@ console.log(`step 3 total viewport row count: ${expanded.length}`);
 console.log(`step 3 summary row count: ${summaryCount(expanded)}`);
 show("step 3 expanded group frame", expanded);
 
-const cardRow = expanded.findIndex(row => CALL_ROW.test(row));
+const cardRow = expanded.findIndex((row, index) => index > parentRow && CALL_ROW.test(row));
+console.log(`step 4 card row text: ${JSON.stringify(expanded[cardRow] ?? null)}`);
 const beforeCardClick = expanded.join("\n");
 if (cardRow >= 0) click(cardRow);
 await Bun.sleep(1200);

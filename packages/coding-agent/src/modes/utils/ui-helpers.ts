@@ -11,6 +11,7 @@ import { AssistantMessageComponent } from "../../modes/components/assistant-mess
 import { createBackgroundTanDispatchBlock } from "../../modes/components/background-tan-message";
 import { BashExecutionComponent } from "../../modes/components/bash-execution";
 import { detectCacheInvalidation } from "../../modes/components/cache-invalidation-marker";
+import { ServedModelTracker } from "../../modes/components/served-model-marker";
 import { CollabPromptMessageComponent } from "../../modes/components/collab-prompt-message";
 import {
 	BranchSummaryMessageComponent,
@@ -303,7 +304,7 @@ export class UiHelpers {
 								message,
 								this.ctx.viewSession.sessionManager.putBlobSync.bind(this.ctx.viewSession.sessionManager),
 							);
-						userComponent = new UserMessageComponent(textContent, isSynthetic, imageLinks);
+						userComponent = new UserMessageComponent(textContent, { synthetic: isSynthetic, imageLinks });
 						this.ctx.transcriptMessageComponents.set(message, userComponent);
 					}
 					this.ctx.chatContainer.addChild(userComponent);
@@ -386,6 +387,9 @@ export class UiHelpers {
 		// Reseed the cache-invalidation baseline: this rebuild re-derives every
 		// turn's marker from usage, and the last turn becomes the live baseline.
 		this.ctx.lastAssistantUsage = undefined;
+		// Same for the served-model tracker: replaying history re-flags the first
+		// occurrence of each substitution and carries the memory forward live.
+		this.ctx.servedModelTracker = new ServedModelTracker();
 
 		if (options.updateFooter) {
 			this.ctx.statusLine.invalidate();
@@ -514,6 +518,7 @@ export class UiHelpers {
 					if (usage.cacheRead + usage.cacheWrite + usage.input > 0) {
 						this.ctx.lastAssistantUsage = usage;
 					}
+					assistantComponent.setServedModelMismatch(this.ctx.servedModelTracker.check(message));
 				}
 				if (assistantHasVisibleContent(message)) {
 					// Rebuild reconstructs immutable history; seal (not finalize) because
@@ -954,6 +959,7 @@ export class UiHelpers {
 		const previousPendingBashComponents = this.ctx.pendingBashComponents;
 		const previousPendingPythonComponents = this.ctx.pendingPythonComponents;
 		const previousLastAssistantUsage = this.ctx.lastAssistantUsage;
+		const previousServedModelTracker = this.ctx.servedModelTracker;
 		const chatWasAlreadyRendered = this.ctx.initialChatRendered;
 		const renderOptions = {
 			updateFooter: true,
@@ -1060,6 +1066,7 @@ export class UiHelpers {
 				this.ctx.pendingBashComponents = previousPendingBashComponents;
 				this.ctx.pendingPythonComponents = previousPendingPythonComponents;
 				this.ctx.lastAssistantUsage = previousLastAssistantUsage;
+				this.ctx.servedModelTracker = previousServedModelTracker;
 				stagedChatContainer.disposeChildren();
 			}
 			this.ctx.initialChatRendered = committed ? true : chatWasAlreadyRendered;
