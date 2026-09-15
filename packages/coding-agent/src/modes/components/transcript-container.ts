@@ -91,7 +91,6 @@ const MAX_LIVE_BLOCKS = 256;
 const PINNED_FRONTIER_WARN_MS = 30_000;
 const EMPTY_ROWS: readonly string[] = [];
 const EMPTY_STABLE_ROWS: readonly TranscriptStableRow[] = [];
-const EMPTY_HISTORY_TARGETS: readonly (HistoryRowTarget | undefined)[] = [];
 function isFinalized(component: Component): boolean {
 	const block = component as Component & FinalizableBlock;
 	return block.isTranscriptBlockFinalized?.() ?? true;
@@ -133,12 +132,6 @@ export function trimBlankEdges(rows: readonly string[]): readonly string[] {
 	return start === 0 && end === rows.length ? rows : rows.slice(start, end);
 }
 
-/** One immutable history row's owner and local row inside its component render. */
-export interface HistoryRowTarget {
-	component: Component;
-	local: number;
-}
-
 /** One live block's row span in the last `renderViewport` output (half-open `[start, end)`). */
 export interface TranscriptViewportSpan {
 	component: Component;
@@ -174,8 +167,6 @@ export class TranscriptContainer extends Container {
 	#pinnedFrontier: { index: number; since: number; logged: boolean } | undefined;
 	/** Block spans of the last `renderViewport` output, for click hit-testing. */
 	#lastViewportSpans: TranscriptViewportSpan[] = [];
-	/** Owners of the most recently offered history batch, index-aligned with its rows. */
-	#lastHistoryTargets: readonly (HistoryRowTarget | undefined)[] = EMPTY_HISTORY_TARGETS;
 
 	override addChild(component: Component): void {
 		if (isToolActivityComponent(component)) component.setToolActivityVisible(this.#toolActivityVisible);
@@ -209,7 +200,6 @@ export class TranscriptContainer extends Container {
 		this.#replayPending = false;
 		this.#replayRequested = false;
 		this.#lastViewportSpans = [];
-		this.#lastHistoryTargets = EMPTY_HISTORY_TARGETS;
 	}
 
 	setToolActivityVisible(visible: boolean): void {
@@ -319,30 +309,6 @@ export class TranscriptContainer extends Container {
 	/** Block spans of the last `renderViewport` output, in output coordinates. Empty when the tail is empty. */
 	getLastViewportSpans(): readonly TranscriptViewportSpan[] {
 		return this.#lastViewportSpans;
-	}
-
-	/** Owners of the most recently composed history rows, index-aligned with that batch. */
-	getLastHistoryTargets(): readonly (HistoryRowTarget | undefined)[] {
-		return this.#lastHistoryTargets;
-	}
-
-	/** Whether a history token's component still belongs to this transcript. */
-	ownsHistoryComponent(component: Component): boolean {
-		this.#syncEntries();
-		return this.#entries.some(entry => entry.component === component);
-	}
-
-	/** Whether a raised history component remains in the mutable transcript tail. */
-	ownsMutableHistoryComponent(component: Component): boolean {
-		this.#syncEntries();
-		const index = this.#entries.findIndex(entry => entry.component === component);
-		return index >= this.#frontier && this.#entries[index]?.state !== "committed";
-	}
-
-	#noteAppendTargets(component: Component, first: number, count: number): void {
-		const targets: (HistoryRowTarget | undefined)[] = [];
-		for (let row = 0; row < count; row++) targets.push({ component, local: first + row });
-		this.#lastHistoryTargets = targets;
 	}
 
 	/** Collapse a per-line owner list into run-length block spans, clamped to
@@ -503,7 +469,6 @@ export class TranscriptContainer extends Container {
 			const before = this.#renderStablePrefix(entry, entry.emitted, width);
 			const after = this.#renderStablePrefix(entry, offered.emittedEnd, width);
 			rows = after.slice(before.length);
-			this.#noteAppendTargets(entry.component, before.length, rows.length);
 		} else if (offered.kind === "commit") {
 			rows = this.#renderRange(this.#frontier, offered.end, width, true);
 		} else {
@@ -564,7 +529,6 @@ export class TranscriptContainer extends Container {
 				return undefined;
 			}
 			const rows = after.slice(before.length);
-			this.#noteAppendTargets(head.component, before.length, rows.length);
 			const batch: HistoryBatch = {
 				id: this.#nextBatchId++,
 				rows,
@@ -743,7 +707,6 @@ export class TranscriptContainer extends Container {
 
 	#renderRange(start: number, end: number, width: number, trailingBlank: boolean): readonly string[] {
 		const rows: string[] = [];
-		const targets: (HistoryRowTarget | undefined)[] = [];
 		// A range head whose rows already went out row by row contributes nothing
 		// here, yet its rows are on screen: the next block still needs the blank
 		// that separates two blocks, or it lands flush against them.
@@ -766,25 +729,20 @@ export class TranscriptContainer extends Container {
 			const continuing = index === start && emittedRows > 0;
 			if (rows.length > 0 || emittedAbove || (this.#emissionOpen && !continuing)) {
 				rows.push("");
-				targets.push(undefined);
 			}
 			emittedAbove = false;
 			for (let row = 0; row < block.length; row++) {
 				rows.push(block[row]!);
-				targets.push({ component: entry.component, local: emittedRows + row });
 			}
 		}
 		if (trailingBlank && rows.length > 0) {
 			rows.push("");
-			targets.push(undefined);
 		}
-		this.#lastHistoryTargets = targets;
 		return rows;
 	}
 
 	#renderReplay(width: number): readonly string[] {
 		const rows = Array.from(this.#renderRange(0, this.#frontier, width, true));
-		const targets = Array.from(this.#lastHistoryTargets);
 		const head = this.#entries[this.#frontier];
 		if (head?.mode === "appendOnly" && head.emitted > 0) {
 			this.#setAllocation(head.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
@@ -792,10 +750,8 @@ export class TranscriptContainer extends Container {
 			const prefix = this.#renderStablePrefix(head, head.emitted, width);
 			for (let row = 0; row < prefix.length; row++) {
 				rows.push(prefix[row]!);
-				targets.push({ component: head.component, local: row });
 			}
 		}
-		this.#lastHistoryTargets = targets;
 		return rows;
 	}
 

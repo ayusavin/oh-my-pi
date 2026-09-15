@@ -926,6 +926,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	readonly #selectorController: SelectorController;
 	readonly #focusController: SessionFocusController;
 	#mouseCaptureSuspended = false;
+	#lastLoggedMouseCapture: boolean | undefined;
 	get viewSession(): AgentSession {
 		return this.#focusController.target ?? this.session;
 	}
@@ -988,10 +989,6 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	resolveViewportClickAction(index: number): ((local: number) => void) | undefined {
 		return this.composer.viewportClickAction(index);
-	}
-
-	resolveHistoryClickAction(target: unknown): (() => void) | undefined {
-		return this.composer.historyClickAction(target);
 	}
 
 	/** Flip the pinned jump list between its collapsed few and the full list, overriding the setting. */
@@ -1164,6 +1161,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		applyHyperlinkSetting();
 		this.ui.setInlineMouseTrackingProvider(() => {
 			const on = this.#isMouseCaptureEnabled();
+			if (on !== this.#lastLoggedMouseCapture) {
+				this.#lastLoggedMouseCapture = on;
+				logger.debug("mouse capture", { capture: on, suspended: this.#mouseCaptureSuspended });
+			}
 			// Dropping capture must also drop the band: with reporting off no
 			// motion event will ever arrive to clear a mid-hover highlight.
 			// The controller cache goes too, or a re-enable plus motion over
@@ -5293,6 +5294,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#appearanceRefreshRequest = undefined;
 		// Last chance to refresh the startup status placeholder for the next launch.
 		this.#persistComposerStatus();
+		this.#inputController.dispose();
 		if (this.loadingAnimation) {
 			this.#stopLoadingAnimation(false);
 		}

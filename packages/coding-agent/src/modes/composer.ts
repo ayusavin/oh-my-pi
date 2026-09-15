@@ -197,21 +197,6 @@ export function routeViewportClickAction(
 	return undefined;
 }
 
-/** Transcript component that can re-create an interacted semantic row at the live bottom. */
-export interface HistoryRaisable {
-	historyTarget(local: number): unknown | undefined;
-	raiseFromHistory(target: unknown): Component | undefined;
-	applyHistoryTarget(target: unknown): void;
-}
-
-interface HistoryTargetRecord {
-	transcript: WeakRef<TranscriptContainer>;
-	component: WeakRef<Component>;
-	descriptor: unknown;
-	raised: WeakRef<Component> | undefined;
-	valid: boolean;
-}
-
 /**
  * Reserved click-candidate id for the pinned HUD expander row. Checked before
  * any registry lookup: its `@…:…` charset cannot collide with generated agent
@@ -273,8 +258,6 @@ export class Composer implements TerminalFrameProvider {
 				id: number;
 				rows: readonly string[];
 				kind: "append" | "replay";
-				targets: readonly unknown[];
-				hoverRows: readonly string[];
 				source:
 					| "header"
 					| {
@@ -286,10 +269,6 @@ export class Composer implements TerminalFrameProvider {
 					  };
 		  }
 		| undefined;
-	/** Tokens are owned by their component and descriptor so re-offered rows retain raised state. */
-	#historyTargetTokens = new WeakMap<Component, Map<unknown, object>>();
-	/** Opaque target records retain only weak transcript and component owners. */
-	#historyTargetRecords = new WeakMap<object, HistoryTargetRecord>();
 	#historyReplayRequested = false;
 	#headerReplayPending = false;
 	#historyFlush = false;
@@ -502,9 +481,6 @@ export class Composer implements TerminalFrameProvider {
 	 * streams; a retired id matches no span and simply paints nothing. Only
 	 * the viewport copy is banded — retirement reads unbanded component rows.
 	 */
-	#paintHoveredLine(line: string): string {
-		return theme.underlineFill(theme.bgFill("selectedBg", line.replace(NESTED_BG_OPEN_PATTERN, "")));
-	}
 
 	#paintHoverBand(viewport: string[], spans: readonly ViewportClickSpan[]): string[] {
 		const hovered = this.#hoveredClickId;
@@ -521,7 +497,7 @@ export class Composer implements TerminalFrameProvider {
 				// first; their closes stay and become band resumes via bgFill.
 				// The underline names the row as a link: the band alone reads as
 				// a selection, and a hovered row here is something to click.
-				return this.#paintHoveredLine(line);
+				return theme.underlineFill(theme.bgFill("selectedBg", line.replace(NESTED_BG_OPEN_PATTERN, "")));
 			}
 			return line;
 		});
@@ -544,58 +520,6 @@ export class Composer implements TerminalFrameProvider {
 	 */
 	viewportClickAction(index: number): ((local: number) => void) | undefined {
 		return routeViewportClickAction(this.#lastClickSpans, index);
-	}
-
-	/** Re-resolve a click on a still-visible row retired into native scrollback. */
-	historyClickAction(target: unknown): (() => void) | undefined {
-		if (!this.#historyTargetIsLive(target)) return undefined;
-		return () => this.#raiseHistoryTarget(target);
-	}
-
-	/** Reject target tokens as soon as their physical scrollback rows leave the screen. */
-	invalidateHistoryTargets(targets: readonly unknown[]): void {
-		for (const target of targets) {
-			if (typeof target !== "object" || target === null) continue;
-			const record = this.#historyTargetRecords.get(target);
-			if (record !== undefined) record.valid = false;
-		}
-	}
-
-	#historyTargetIsLive(target: unknown): boolean {
-		if (typeof target !== "object" || target === null) return false;
-		const record = this.#historyTargetRecords.get(target);
-		if (record === undefined || !record.valid) return false;
-		const transcript = record.transcript.deref();
-		if (transcript === undefined) return false;
-		const raised = record.raised?.deref();
-		if (raised !== undefined && transcript.ownsMutableHistoryComponent(raised)) {
-			return typeof (raised as Partial<HistoryRaisable>).applyHistoryTarget === "function";
-		}
-		const component = record.component.deref();
-		return (
-			component !== undefined &&
-			transcript.ownsHistoryComponent(component) &&
-			typeof (component as Partial<HistoryRaisable>).raiseFromHistory === "function"
-		);
-	}
-
-	#raiseHistoryTarget(target: unknown): void {
-		if (typeof target !== "object" || target === null) return;
-		const record = this.#historyTargetRecords.get(target);
-		if (record === undefined || !record.valid) return;
-		const transcript = record.transcript.deref();
-		if (transcript === undefined) return;
-		const raised = record.raised?.deref();
-		if (raised !== undefined && transcript.ownsMutableHistoryComponent(raised)) {
-			(raised as Partial<HistoryRaisable>).applyHistoryTarget?.(record.descriptor);
-			return;
-		}
-		const component = record.component.deref();
-		if (component === undefined || !transcript.ownsHistoryComponent(component)) return;
-		const nextRaised = (component as Partial<HistoryRaisable>).raiseFromHistory?.(record.descriptor);
-		if (nextRaised === undefined) return;
-		transcript.addChild(nextRaised);
-		record.raised = new WeakRef(nextRaised);
 	}
 
 	/**
@@ -699,13 +623,10 @@ export class Composer implements TerminalFrameProvider {
 			const recomposed = this.#header.render(width);
 			const headerRows = recomposed.length > 0 ? [...recomposed, ""] : this.#reflowRetiredHeader(width, 0);
 			const transcriptRows = transcriptReplay?.rows ?? [];
-			const transcriptHistory = this.#historyRows(transcript, transcriptRows);
 			this.#offeredHistory = {
 				id: this.#nextHistoryId++,
 				rows: [...headerRows, ...transcriptRows],
 				kind: "replay",
-				targets: [...headerRows.map(() => undefined), ...transcriptHistory.targets],
-				hoverRows: [...headerRows, ...transcriptHistory.hoverRows],
 				source: {
 					transcript,
 					transcriptId: transcriptReplay?.id,
@@ -729,8 +650,6 @@ export class Composer implements TerminalFrameProvider {
 					id: this.#nextHistoryId++,
 					rows: headerRows,
 					kind: "append",
-					targets: headerRows.map(() => undefined),
-					hoverRows: headerRows,
 					source: "header",
 				};
 				return this.#historyOffer();
@@ -742,13 +661,10 @@ export class Composer implements TerminalFrameProvider {
 			? transcript.peekFlushBatch(width)
 			: transcript.peekFinalizedBatch(width, Math.max(0, rows - chromeRows));
 		if (batch === undefined) return undefined;
-		const history = this.#historyRows(transcript, batch.rows);
 		this.#offeredHistory = {
 			id: this.#nextHistoryId++,
 			rows: batch.rows,
 			kind: batch.kind ?? "append",
-			targets: history.targets,
-			hoverRows: history.hoverRows,
 			source: { transcript, transcriptId: batch.id, header: "none" },
 		};
 		return this.#historyOffer();
@@ -761,67 +677,7 @@ export class Composer implements TerminalFrameProvider {
 			id: offered.id,
 			rows: offered.rows,
 			kind: offered.kind,
-			targets: offered.targets,
-			hoverRows: offered.hoverRows,
 		};
-	}
-
-	#historyRows(
-		transcript: TranscriptContainer,
-		rows: readonly string[],
-	): { targets: readonly unknown[]; hoverRows: readonly string[] } {
-		const owners = transcript.getLastHistoryTargets();
-		if (owners.length !== rows.length) return { targets: [], hoverRows: [] };
-		const targets: unknown[] = [];
-		const hoverRows: string[] = [];
-		for (let index = 0; index < rows.length; index++) {
-			const owner = owners[index];
-			const raisable = owner?.component as Partial<HistoryRaisable> | undefined;
-			if (
-				owner === undefined ||
-				!Number.isInteger(owner.local) ||
-				owner.local < 0 ||
-				typeof raisable?.historyTarget !== "function" ||
-				typeof raisable.raiseFromHistory !== "function" ||
-				typeof raisable.applyHistoryTarget !== "function"
-			) {
-				targets.push(undefined);
-				hoverRows.push(rows[index]!);
-				continue;
-			}
-			const descriptor = raisable.historyTarget(owner.local);
-			if (descriptor === undefined) {
-				targets.push(undefined);
-				hoverRows.push(rows[index]!);
-				continue;
-			}
-			let componentTokens = this.#historyTargetTokens.get(owner.component);
-			if (componentTokens === undefined) {
-				componentTokens = new Map();
-				this.#historyTargetTokens.set(owner.component, componentTokens);
-			}
-			let target = componentTokens.get(descriptor);
-			if (target === undefined) {
-				target = Object.freeze({});
-				componentTokens.set(descriptor, target);
-				this.#historyTargetRecords.set(target, {
-					transcript: new WeakRef(transcript),
-					component: new WeakRef(owner.component),
-					descriptor,
-					raised: undefined,
-					valid: true,
-				});
-			} else {
-				const record = this.#historyTargetRecords.get(target);
-				if (record !== undefined) {
-					record.transcript = new WeakRef(transcript);
-					record.valid = true;
-				}
-			}
-			targets.push(target);
-			hoverRows.push(this.#paintHoveredLine(rows[index]!));
-		}
-		return { targets, hoverRows };
 	}
 
 	#rerenderOfferedHistory(width: number): void {
@@ -830,27 +686,19 @@ export class Composer implements TerminalFrameProvider {
 		if (offered.source === "header") {
 			const rows = this.#header.render(width);
 			offered.rows = rows.length > 0 ? [...rows, ""] : [];
-			offered.targets = offered.rows.map(() => undefined);
-			offered.hoverRows = offered.rows;
 			return;
 		}
 		const transcript = offered.source.transcript.rerenderOfferedBatch(width);
 		if (offered.source.header === "none") {
 			if (transcript === undefined) return;
 			offered.rows = transcript.rows;
-			const history = this.#historyRows(offered.source.transcript, transcript.rows);
-			offered.targets = history.targets;
-			offered.hoverRows = history.hoverRows;
 			return;
 		}
 		const recomposed = this.#header.render(width);
 		const headerRows = recomposed.length > 0 ? [...recomposed, ""] : this.#reflowRetiredHeader(width, 0);
 		const transcriptRows = transcript?.rows ?? [];
-		const history = this.#historyRows(offered.source.transcript, transcriptRows);
 		offered.source.headerRows = headerRows;
 		offered.rows = [...headerRows, ...transcriptRows];
-		offered.targets = [...headerRows.map(() => undefined), ...history.targets];
-		offered.hoverRows = [...headerRows, ...history.hoverRows];
 	}
 
 	#renderRoots(roots: readonly Component[], width: number): string[] {

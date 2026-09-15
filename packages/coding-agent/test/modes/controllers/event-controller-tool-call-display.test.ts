@@ -10,10 +10,11 @@
  * C1-C8) — never the model's own intent sentence, never a `key=value` dump,
  * never a status word or byte count. `grouped` additionally folds a run of
  * consecutive calls — merging across message boundaries as long as nothing
- * visible interrupts them — into one row naming the work, expandable
- * (ctrl+o) to one line per call. A collapsible `read` call joins that same
- * group like any other call once `display.toolCalls` is `compact`/`grouped`;
- * `ReadToolGroupComponent` keeps owning it only in `full` mode.
+ * visible interrupts them — into one parent summary row. Expanding that row
+ * (ctrl+o or click) renders each call's full card. A collapsible `read` call
+ * joins that same group like any other call once `display.toolCalls` is
+ * `compact`/`grouped`; `ReadToolGroupComponent` keeps owning it only in
+ * `full` mode.
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
@@ -25,7 +26,7 @@ import {
 	mountCompactToolCall,
 	resetCompactToolGroup,
 } from "@oh-my-pi/pi-coding-agent/modes/components/tool-call-compact";
-import { ToolExecutionComponent, type ToolExecutionUi } from "@oh-my-pi/pi-coding-agent/modes/components/tool-execution";
+import { ToolExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components/tool-execution";
 import { TranscriptContainer } from "@oh-my-pi/pi-coding-agent/modes/components/transcript-container";
 import { EventController } from "@oh-my-pi/pi-coding-agent/modes/controllers/event-controller";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
@@ -33,8 +34,7 @@ import { buildAsyncResultBlock } from "@oh-my-pi/pi-coding-agent/modes/utils/tra
 import type { AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { CustomMessage } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { createInteractiveModeContext } from "../../helpers/interactive-mode-context";
-import { Container, parseSgrMouse } from "@oh-my-pi/pi-tui";
-const ESC = String.fromCharCode(27);
+import { Container } from "@oh-my-pi/pi-tui";
 
 beforeAll(async () => {
 	await initTheme(false, undefined, undefined, "dark", "light");
@@ -60,288 +60,91 @@ describe("CompactToolCallComponent", () => {
 	});
 });
 
-describe("CompactToolCallComponent click-to-expand (C7)", () => {
+describe("CompactToolCallComponent parent-row expansion", () => {
 	beforeAll(() => {
 		initTheme();
 	});
 
-	it("a left click on a settled single row toggles it; the sibling stays collapsed", () => {
-		const first = new CompactToolCallComponent();
-		first.addCall("call-1", "bash", "Bash", { command: "echo one" }, undefined);
-		first.updateResult(
-			{ content: [{ type: "text", text: "out one\nmore\nlines" }], isError: false },
-			false,
-			"call-1",
-		);
-		const second = new CompactToolCallComponent();
-		second.addCall("call-2", "bash", "Bash", { command: "echo two" }, undefined);
-		second.updateResult({ content: [{ type: "text", text: "out two" }], isError: false }, false, "call-2");
+	function settledGroup(): CompactToolCallComponent {
+		const component = new CompactToolCallComponent();
+		component.addCall("call-1", "bash", "Bash", { command: "echo first argument" }, undefined);
+		component.addCall("call-2", "bash", "Bash", { command: "echo second argument" }, undefined);
+		component.updateResult({ content: [{ type: "text", text: "first output" }], isError: false }, false, "call-1");
+		component.updateResult({ content: [{ type: "text", text: "second output" }], isError: false }, false, "call-2");
+		return component;
+	}
 
-		const collapsed = plain(first.render(120));
-		expect(collapsed.split("\n")).toHaveLength(1);
-		expect(first.getViewportClickAction()).toBeDefined();
+	it("renders a collapsed group as exactly one parent summary row", () => {
+		const component = settledGroup();
 
-		first.getViewportClickAction()!(0);
-		const expanded = plain(first.render(120));
-		expect(expanded.split("\n").length).toBeGreaterThan(1);
-		expect(expanded).toContain("out one");
-		expect(expanded).toContain("more");
+		const rows = component.render(120);
 
-		// The sibling is untouched: its rows never changed, and its own toggle
-		// acts on it alone — opening its own card, not the first row's.
-		expect(plain(second.render(120)).split("\n")).toHaveLength(1);
-		expect(second.getViewportClickAction()).toBeDefined();
-		second.getViewportClickAction()!(0);
-		const siblingExpanded = plain(second.render(120));
-		expect(siblingExpanded.split("\n").length).toBeGreaterThan(1);
-		expect(siblingExpanded).toContain("out two");
-		expect(siblingExpanded).not.toContain("out one");
-
-		// A second click collapses the first row back.
-		first.getViewportClickAction()!(0);
-		expect(plain(first.render(120)).split("\n")).toHaveLength(1);
+		expect(rows).toHaveLength(1);
+		expect(plain(rows)).toContain("2 shell commands");
 	});
 
-	it("a grouped row expands to the summary plus one dimmed line per call, and a second click collapses it", () => {
-		const component = new CompactToolCallComponent();
-		component.addCall("call-1", "bash", "Bash", { command: "echo first" }, undefined);
-		component.addCall("call-2", "bash", "Bash", { command: "echo second" }, undefined);
+	it("expands every call card from the parent and collapses from the same row", () => {
+		const component = settledGroup();
 		const collapsed = plain(component.render(120));
-		expect(collapsed.split("\n")).toHaveLength(1);
-		expect(collapsed).toContain("2 shell commands");
 
 		component.getViewportClickAction()!(0);
-		const expandedLines = component.render(120);
-		expect(expandedLines).toHaveLength(3);
-		expect(expandedLines[1]).toContain("\x1b[2m"); // per-call lines are dimmed (C7)
-		expect(expandedLines[2]).toContain("\x1b[2m");
-		const expanded = plain(expandedLines);
-		expect(expanded).toContain("2 shell commands"); // the summary row stays (req 3)
-		expect(expanded).toContain("echo first");
-		expect(expanded).toContain("echo second");
+		const expanded = plain(component.render(120));
+		expect(expanded).toContain("echo first argument");
+		expect(expanded).toContain("first output");
+		expect(expanded).toContain("echo second argument");
+		expect(expanded).toContain("second output");
 
 		component.getViewportClickAction()!(0);
 		expect(plain(component.render(120))).toBe(collapsed);
 	});
-
-	it("marks every row with what a click does: ▸ opens, ▾ closes — a running call included", () => {
-		const component = new CompactToolCallComponent();
-		component.addCall("call-1", "bash", "Bash", { command: "echo one" }, undefined);
-		component.addCall("call-2", "bash", "Bash", { command: "echo two" }, undefined);
-		component.updateResult({ content: [{ type: "text", text: "out one" }], isError: false }, false, "call-1");
-		// call-2 never settles: its row still opens, to its arguments.
-		expect(plain(component.render(120)).startsWith("▸ ")).toBe(true);
-
+	it("exposes no click target for any full-card row", () => {
+		const component = settledGroup();
 		component.getViewportClickAction()!(0);
-		const expanded = plain(component.render(120)).split("\n");
-		expect(expanded[0]!.startsWith("▾ ")).toBe(true);
-		expect(expanded[1]!.startsWith("   ▸ ")).toBe(true);
-		expect(expanded[2]!.startsWith("   ▸ ")).toBe(true);
+		const expandedRows = component.render(120);
+		expect(expandedRows.length).toBeGreaterThan(1);
 
-		component.getViewportClickAction()!(1); // open call-1's card
-		const opened = plain(component.render(120)).split("\n");
-		expect(opened[1]!.startsWith("   ▾ ")).toBe(true);
+		for (let row = 1; row < expandedRows.length; row++) {
+			expect(component.getClickFocusAgentIds(row)).toEqual([]);
+		}
+		const expanded = plain(expandedRows);
+		component.getViewportClickAction()!(1);
+		expect(plain(component.render(120))).toBe(expanded);
 	});
 
-	it("a wheel report is not a left click and toggles nothing", () => {
+	it("maps every width-40 parent segment to the same toggle action", () => {
 		const component = new CompactToolCallComponent();
-		component.addCall("call-1", "bash", "Bash", { command: "echo hi" }, undefined);
-		component.updateResult({ content: [{ type: "text", text: "out" }], isError: false }, false, "call-1");
-		const before = plain(component.render(120));
+		component.addCall(
+			"call-1",
+			"bash",
+			"Bash",
+			{ command: "echo a deliberately long parent row with a wrapped continuation segment" },
+			undefined,
+		);
+		component.updateResult({ content: [{ type: "text", text: "wrapped output" }], isError: false }, false, "call-1");
 
-		const event = parseSgrMouse(`${ESC}[<65;5;1M`);
-		expect(event).not.toBeNull();
-		expect(event!.leftClick).toBe(false);
-		expect(event!.wheel).toBe(1);
-		// No toggle method fires without a real left click routed to the row.
-		expect(plain(component.render(120))).toBe(before);
+		const collapsedRows = component.render(40);
+		expect(collapsedRows.length).toBeGreaterThan(1);
+		const parentIds = collapsedRows.flatMap((_row, index) => component.getClickFocusAgentIds(index));
+		expect(parentIds).toHaveLength(collapsedRows.length);
+		expect([...new Set(parentIds)]).toHaveLength(1);
+
+		component.getViewportClickAction()!(collapsedRows.length - 1);
+		expect(plain(component.render(40))).toContain("wrapped output");
 	});
 
-	it("ctrl+o keeps driving the session-wide flag alongside per-row state", () => {
-		const component = new CompactToolCallComponent();
-		component.addCall("call-1", "bash", "Bash", { command: "echo first" }, undefined);
-		component.addCall("call-2", "bash", "Bash", { command: "echo second" }, undefined);
-
-		// ctrl+o expands every row session-wide…
-		component.setExpanded(true);
-		expect(plain(component.render(120)).split("\n")).toHaveLength(3);
-		component.setExpanded(false);
-		expect(plain(component.render(120)).split("\n")).toHaveLength(1);
-
-		// …while a click override on this row stays independent of it.
-		component.getViewportClickAction()!(0);
-		expect(plain(component.render(120)).split("\n")).toHaveLength(3);
-		component.setExpanded(false);
-		expect(plain(component.render(120)).split("\n")).toHaveLength(3);
-		component.getViewportClickAction()!(0);
-		expect(plain(component.render(120)).split("\n")).toHaveLength(1);
-		// With the override cleared and the baseline false, the row is collapsed again.
-		component.setExpanded(false);
-		expect(plain(component.render(120)).split("\n")).toHaveLength(1);
-	});
-
-	it("a running call is clickable too: its card shows the arguments the row truncated", () => {
-		const pending = new CompactToolCallComponent();
-		pending.addCall("call-1", "bash", "Bash", { command: "echo running with a very long tail of arguments" }, undefined);
-		expect(pending.getViewportClickAction()).toBeDefined();
-		expect(pending.getClickFocusAgentIds()).not.toEqual([]);
-
-		pending.getViewportClickAction()!(0);
-		expect(plain(pending.render(120))).toContain("echo running with a very long tail of arguments");
-
-		// The result lands in the already-open card.
-		pending.updateResult({ content: [{ type: "text", text: "late output" }], isError: false }, false, "call-1");
-		expect(plain(pending.render(120))).toContain("late output");
-	});
-
-	it("clicking one subordinate call in an expanded group opens its stock full card; a second click restores the dimmed line", () => {
-		const component = new CompactToolCallComponent();
-		component.addCall("call-1", "bash", "Bash", { command: "echo one" }, undefined);
-		component.addCall("call-2", "bash", "Bash", { command: "echo two" }, undefined);
-		component.updateResult({ content: [{ type: "text", text: "out one" }], isError: false }, false, "call-1");
-		component.updateResult({ content: [{ type: "text", text: "out two" }], isError: false }, false, "call-2");
-		component.getViewportClickAction()!(0); // expand: row 0 = summary, row 1 = call-1, row 2 = call-2
-
-		component.getViewportClickAction()!(2); // click call-2's own dimmed line
-		const openedLines = component.render(120);
-		expect(openedLines.length).toBeGreaterThan(3);
-		const opened = plain(openedLines);
-		expect(opened).toContain("out two");
-		expect(plain([openedLines[0]!])).toContain("2 shell commands"); // summary untouched
-		expect(plain([openedLines[1]!])).toContain("echo one"); // call-1 stays a dimmed one-liner
-		// The open call keeps its own header row above the card, so the row that
-		// closes it again is on screen.
-		expect(plain([openedLines[2]!])).toContain("echo two");
-
-		const ui: ToolExecutionUi = { requestRender() {}, requestComponentRender() {}, resetDisplay() {} };
-		const reference = new ToolExecutionComponent("bash", { command: "echo two" }, {}, undefined, ui, undefined, "call-2");
-		reference.setExpanded(true);
-		reference.setArgsComplete("call-2");
-		reference.setExecutionStarted("call-2");
-		reference.updateResult({ content: [{ type: "text", text: "out two" }], isError: false }, false, "call-2");
-		// Card rows are the stock card's own, indented under the header.
-		const cardRows = openedLines.slice(3).map(line => Bun.stripANSI(line));
-		expect(cardRows.every(row => row.startsWith("   "))).toBe(true);
-		expect(cardRows.map(row => row.slice(3)).join("\n")).toBe(plain(reference.render(117)));
-
-		// A second click on any of the open card's own rows restores the dimmed line.
-		component.getViewportClickAction()!(openedLines.length - 1);
-		const closedLines = component.render(120);
-		expect(closedLines).toHaveLength(3);
-		expect(plain([closedLines[2]!])).toContain("echo two");
-		expect(plain([closedLines[2]!])).not.toContain("out two");
-	});
-
-	it("hovering one row in an expanded group bands only that row's own id, never a sibling's or the summary's", () => {
-		const component = new CompactToolCallComponent();
-		component.addCall("call-1", "bash", "Bash", { command: "echo one" }, undefined);
-		component.addCall("call-2", "bash", "Bash", { command: "echo two" }, undefined);
-		component.updateResult({ content: [{ type: "text", text: "out one" }], isError: false }, false, "call-1");
-		component.updateResult({ content: [{ type: "text", text: "out two" }], isError: false }, false, "call-2");
-		component.getViewportClickAction()!(0);
-		component.render(120);
-
-		const summaryIds = component.getClickFocusAgentIds(0);
-		const call1Ids = component.getClickFocusAgentIds(1);
-		const call2Ids = component.getClickFocusAgentIds(2);
-		expect(summaryIds).toHaveLength(1);
-		expect(call1Ids).toHaveLength(1);
-		expect(call2Ids).toHaveLength(1);
-		expect(new Set([...summaryIds, ...call1Ids, ...call2Ids]).size).toBe(3);
-	});
-
-	it("a still-pending sibling inside an expanded group opens like any other row", () => {
-		const component = new CompactToolCallComponent();
-		component.addCall("call-1", "bash", "Bash", { command: "echo one" }, undefined);
-		component.addCall("call-2", "bash", "Bash", { command: "echo two on a much longer line" }, undefined);
-		component.updateResult({ content: [{ type: "text", text: "out one" }], isError: false }, false, "call-1");
-		// call-2 never settles.
-		component.getViewportClickAction()!(0);
-		component.render(120);
-
-		expect(component.getClickFocusAgentIds(2)).not.toEqual([]);
-		component.getViewportClickAction()!(2);
-		expect(plain(component.render(120))).toContain("echo two on a much longer line");
-	});
-
-	it("a group is only red when nothing in it worked: one failure among successes is not a failed run", () => {
-		const icon = (rows: string): string => rows.split("\n")[0]!.replace(/^[▸▾]\s*/, "").slice(0, 1);
-		const mixed = new CompactToolCallComponent();
-		mixed.addCall("call-1", "bash", "Bash", { command: "echo one" }, undefined);
-		mixed.addCall("call-2", "bash", "Bash", { command: "echo two" }, undefined);
-		mixed.updateResult({ content: [{ type: "text", text: "out" }], isError: false }, false, "call-1");
-		mixed.updateResult({ content: [{ type: "text", text: "boom" }], isError: true }, false, "call-2");
-
-		const allFailed = new CompactToolCallComponent();
-		allFailed.addCall("call-1", "bash", "Bash", { command: "echo one" }, undefined);
-		allFailed.addCall("call-2", "bash", "Bash", { command: "echo two" }, undefined);
-		allFailed.updateResult({ content: [{ type: "text", text: "boom" }], isError: true }, false, "call-1");
-		allFailed.updateResult({ content: [{ type: "text", text: "boom" }], isError: true }, false, "call-2");
-
-		const stillRunning = new CompactToolCallComponent();
-		stillRunning.addCall("call-1", "bash", "Bash", { command: "echo one" }, undefined);
-		stillRunning.addCall("call-2", "bash", "Bash", { command: "echo two" }, undefined);
-		stillRunning.updateResult({ content: [{ type: "text", text: "boom" }], isError: true }, false, "call-1");
-
-		const failedIcon = icon(plain(allFailed.render(120)));
-		expect(icon(plain(mixed.render(120)))).not.toBe(failedIcon);
-		expect(icon(plain(stillRunning.render(120)))).not.toBe(failedIcon);
-		expect(icon(plain(stillRunning.render(120)))).not.toBe(icon(plain(mixed.render(120))));
-		// The failure is not hidden — it is on its own row once expanded.
-		mixed.getViewportClickAction()!(0);
-		expect(plain(mixed.render(120)).split("\n")[2]).toContain(failedIcon);
-	});
-
-	it("collapsing the group (ctrl+o) while a subordinate call is open retracts its card", () => {
-		const component = new CompactToolCallComponent();
-		component.addCall("call-1", "bash", "Bash", { command: "echo one" }, undefined);
-		component.addCall("call-2", "bash", "Bash", { command: "echo two" }, undefined);
-		component.updateResult({ content: [{ type: "text", text: "out one" }], isError: false }, false, "call-1");
-		component.updateResult({ content: [{ type: "text", text: "out two" }], isError: false }, false, "call-2");
-		component.setExpanded(true);
-		component.render(120);
-		component.getViewportClickAction()!(2); // open call-2
-		expect(component.render(120).length).toBeGreaterThan(3);
-
-		component.setExpanded(false); // ctrl+o collapses the whole group back to its summary
-		const collapsed = component.render(120);
-		expect(collapsed).toHaveLength(1);
-		expect(plain(collapsed)).toContain("2 shell commands");
-
-		component.setExpanded(true); // re-expanding must not silently resurrect the old open card
-		expect(component.render(120)).toHaveLength(3);
-	});
-
-	it("a settled call whose output is empty still opens: the card shows the full command the row truncated", () => {
-		const component = new CompactToolCallComponent();
-		const command = `find ~/.claude/projects -name "e7ea78bd-2ca4-4de9-af12-a73051af1d89.jsonl" -maxdepth 6 -print`;
-		component.addCall("call-1", "bash", "Bash", { command }, undefined);
-		component.updateResult({ content: [{ type: "text", text: "" }], isError: false }, false, "call-1");
-
-		expect(component.getClickFocusAgentIds(0)).toHaveLength(1);
-		component.getViewportClickAction()!(0);
-		const opened = plain(component.render(120));
-		expect(opened).toContain("-maxdepth 6 -print");
-	});
-
-	it("an open card keeps the block out of native scrollback until the closing click", () => {
-		const component = new CompactToolCallComponent();
-		component.addCall("call-1", "bash", "Bash", { command: "echo one" }, undefined);
-		component.addCall("call-2", "bash", "Bash", { command: "echo two" }, undefined);
-		component.updateResult({ content: [{ type: "text", text: "out one" }], isError: false }, false, "call-1");
-		component.updateResult({ content: [{ type: "text", text: "out two" }], isError: false }, false, "call-2");
+	it("keeps a sealed block mutable only for click-created expansion", () => {
+		const component = settledGroup();
 		component.seal();
 		expect(component.isTranscriptBlockFinalized()).toBe(true);
 
+		component.setExpanded(true);
+		expect(component.isTranscriptBlockFinalized()).toBe(true);
+		component.setExpanded(false);
+		component.render(120);
 		component.getViewportClickAction()!(0);
-		component.render(120);
-		component.getViewportClickAction()!(2); // open call-2's card
-		component.render(120);
-		// Retiring now would print the open card into scrollback, where no click
-		// can ever collapse it again.
 		expect(component.isTranscriptBlockFinalized()).toBe(false);
 
-		component.getViewportClickAction()!(2); // close it
+		component.getViewportClickAction()!(0);
 		expect(component.isTranscriptBlockFinalized()).toBe(true);
 	});
 });
@@ -353,7 +156,13 @@ describe("CompactToolCallComponent ask resultSummary (B)", () => {
 
 	it("the ask row shows the question before resolution and the chosen answer after", () => {
 		const component = new CompactToolCallComponent();
-		component.addCall("call-1", "ask", "Ask", { questions: [{ id: "q1", question: "Use plan mode?", options: ["Plan", "No"], multi: false }] }, undefined);
+		component.addCall(
+			"call-1",
+			"ask",
+			"Ask",
+			{ questions: [{ id: "q1", question: "Use plan mode?", options: ["Plan", "No"], multi: false }] },
+			undefined,
+		);
 		const pending = plain(component.render(120));
 		expect(pending).toContain("Ask(Use plan mode?)");
 		expect(pending).not.toContain("Yes");
@@ -361,7 +170,17 @@ describe("CompactToolCallComponent ask resultSummary (B)", () => {
 		component.updateResult(
 			{
 				content: [{ type: "text", text: "User answers:\nq1: Plan" }],
-				details: { results: [{ id: "q1", question: "Use plan mode?", options: ["Plan", "No"], multi: false, selectedOptions: ["Plan"] }] },
+				details: {
+					results: [
+						{
+							id: "q1",
+							question: "Use plan mode?",
+							options: ["Plan", "No"],
+							multi: false,
+							selectedOptions: ["Plan"],
+						},
+					],
+				},
 				isError: false,
 			},
 			false,
@@ -377,7 +196,7 @@ describe("CompactToolCallComponent ask resultSummary (B)", () => {
 		custom.addCall("call-1", "ask", "Ask", { question: "Name the branch?" }, undefined);
 		custom.updateResult(
 			{
-				content: [{ type: "text", text: "User answers:\nq1: \"feat/x\"" }],
+				content: [{ type: "text", text: 'User answers:\nq1: "feat/x"' }],
 				details: { question: "Name the branch?", customInput: "feat/x" },
 				isError: false,
 			},
@@ -545,7 +364,7 @@ describe("display.toolCalls", () => {
 		expect(ellipses).toBe(1);
 	});
 
-	it("grouped names the work instead of a bare call count, and expands to one row per call (C5)", async () => {
+	it("grouped names the work instead of a bare call count (C5)", async () => {
 		settings.set("display.toolCalls", "grouped");
 		const { controller, chatContainer } = createFixture();
 		await streamCompletion(controller, [
@@ -556,16 +375,9 @@ describe("display.toolCalls", () => {
 
 		const groups = compactGroups(chatContainer);
 		expect(groups).toHaveLength(1);
-		const group = groups[0]!;
-		const collapsed = plain(group.render(120));
+		const collapsed = plain(groups[0]!.render(120));
 		expect(collapsed).toContain("3 shell commands");
 		expect(collapsed).not.toMatch(/\d+ tool calls?/);
-
-		group.setExpanded(true);
-		const expanded = plain(group.render(120));
-		expect(expanded).toContain("echo one");
-		expect(expanded).toContain("echo two");
-		expect(expanded).toContain("echo three");
 	});
 
 	it("grouped names every tool in a mixed-tool run, not the total (C5)", async () => {
@@ -758,7 +570,10 @@ describe("CompactToolCallComponent", () => {
 		const component = new CompactToolCallComponent();
 		component.addCall("call-1", "bash", "Bash", { command: "chmod 400 file" }, undefined);
 		component.updateResult(
-			{ content: [{ type: "text", text: "Permission denied\nsome stack trace the row must not show" }], isError: true },
+			{
+				content: [{ type: "text", text: "Permission denied\nsome stack trace the row must not show" }],
+				isError: true,
+			},
 			false,
 			"call-1",
 		);
@@ -780,7 +595,7 @@ describe("CompactToolCallComponent", () => {
 		expect(bareText).not.toContain("(");
 	});
 
-	it("folds N calls into one collapsed group row naming the work, and expands to the summary plus N rows", () => {
+	it("folds N calls into one collapsed group row naming the work", () => {
 		const component = new CompactToolCallComponent();
 		component.addCall("call-1", "bash", "Bash", { command: "echo first" }, undefined);
 		component.addCall("call-2", "bash", "Bash", { command: "echo second" }, undefined);
@@ -791,14 +606,6 @@ describe("CompactToolCallComponent", () => {
 		const collapsed = component.render(120);
 		expect(collapsed).toHaveLength(1);
 		expect(plain(collapsed)).toContain("3 shell commands");
-
-		component.setExpanded(true);
-		const expanded = component.render(120);
-		expect(expanded).toHaveLength(4);
-		expect(Bun.stripANSI(expanded[0]!)).toContain("3 shell commands");
-		expect(Bun.stripANSI(expanded[1]!)).toContain("echo first");
-		expect(Bun.stripANSI(expanded[2]!)).toContain("echo second");
-		expect(Bun.stripANSI(expanded[3]!)).toContain("echo third");
 	});
 
 	it("closes to new entries only once finalized — a settled-but-unfinalized group stays open (Defect 1)", () => {

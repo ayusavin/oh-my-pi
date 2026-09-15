@@ -1,28 +1,18 @@
 /**
  * Compact and grouped tool-call rendering for `display.toolCalls`.
  *
- * `compact` shows one line per call; `grouped` additionally folds a run of
- * consecutive calls into one collapsed row with a count, expanding (ctrl+o
- * or a click on the group's own row) to the same per-call lines `compact`
- * always shows — the group row itself stays, dimmed calls list beneath it
- * (two-level expansion, C7). Both settings share this one component: a
- * `compact` instance never accretes past one entry, so it always renders
- * the single-call line.
- *
- * Clicking one call's own row — a dimmed row inside an expanded group, or a
- * standalone `compact` row once it has settled — swaps that one line for the
- * exact `ToolExecutionComponent` card `full` mode would have built for it
- * (command/arguments plus output), reusing the class rather than
- * duplicating its rendering; a second click on any of that card's own rows
- * returns it to the one-line form. Only one call can be open per instance.
+ * `compact` shows one parent row per call. `grouped` folds a consecutive run
+ * into one parent summary row. The parent row is the only interactive surface:
+ * expanding it renders the full `ToolExecutionComponent` card for every call
+ * beneath it; collapsing it removes every card. `compact` instances never
+ * accrete past one entry, so their call row is the parent.
  *
  * Row and group content follow the "Compact rendering contract" (C1-C8) in
  * `.downstream/spec/transcript.md`: a row is the tool's name and its primary
- * argument in parentheses, never a `key=value` dump of the raw arguments and
- * never the model's own intent sentence (that stays in the narration above
- * the run, drawn elsewhere by `tools.intentTracing`); no row carries a
- * status word or a byte count; a group row names the work, never a bare call
- * count.
+ * argument in parentheses, never a `key=value` dump of raw arguments and
+ * never the model's intent sentence (that stays in narration above the run,
+ * drawn elsewhere by `tools.intentTracing`); no row carries a status word or
+ * byte count; a group row names the work, never a bare call count.
  *
  * Read calls that collapse into `ReadToolGroupComponent` keep that richer,
  * path-aware rendering unconditionally — the `display.toolCalls` branch
@@ -31,8 +21,8 @@
  */
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { Component } from "@oh-my-pi/pi-tui";
-import { Container, replaceTabs, Text, wrapTextWithAnsi } from "@oh-my-pi/pi-tui";
-import { formatDuration } from "@oh-my-pi/pi-utils";
+import { Container, Text } from "@oh-my-pi/pi-tui";
+import { formatDuration, logger } from "@oh-my-pi/pi-utils";
 import { theme } from "../../modes/theme/theme";
 import { TRUNCATE_LENGTHS, type ToolUIStatus } from "../../tools/render-utils";
 import { type ToolActivitySummary, toolRenderers } from "../../tools/renderers";
@@ -43,9 +33,9 @@ type CallOutcome = "pending" | "success" | "error";
 
 /** Content shape `updateResult` accepts and stores verbatim — matches
  * `ToolExecutionHandle.updateResult`'s own declared type (image blocks
- * included) so a call opened later (req 4) replays into its
- * `ToolExecutionComponent` card exactly as `full` mode would have built it,
- * not a text-only reconstruction that drops images. */
+ * included) so an expanded parent can replay every call into the exact
+ * `ToolExecutionComponent` card `full` mode would have built, not a
+ * text-only reconstruction that drops images. */
 export interface CompactCallResult {
 	content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
 	details?: unknown;
@@ -62,95 +52,17 @@ interface CompactCallEntry {
 	args: unknown;
 	outcome: CallOutcome;
 	/** Full joined text of the settled result — `firstErrorLine` reads its
-	 * first line for a failed call's row (C3), and per-row clickability (C7)
-	 * gates on it being non-empty ("more to show"). */
+	 * first line for a failed call's parent row. */
 	resultText?: string;
 	/** One-line answer summary from the tool's `resultSummary` hook (e.g.
 	 * ask's chosen option, B) — the renderer's own resolved data, never
 	 * derived from `resultText`. */
 	resultSummary?: string;
-	/** Verbatim settled result, replayed into a `ToolExecutionComponent` when
-	 * this call opens (req 4). Undefined until settled. */
+	/** Verbatim settled result, replayed into the full card while the parent
+	 * row is expanded. Undefined until settled. */
 	rawResult?: CompactCallResult;
 	durationMs?: number;
 	startedAtNow?: number;
-	/** This entry's own click-candidate id (C7 hover banding): distinct from
-	 * every other entry's and from the group's own summary-row id, so
-	 * hovering or clicking one dimmed subordinate line — or its open card,
-	 * once opened (req 4) — never bands/toggles a sibling row. */
-	clickId: string;
-}
-
-interface CompactHistoryPresentation {
-	expanded: boolean;
-	rowExpanded: boolean | undefined;
-	openToolCallId: string | undefined;
-}
-
-interface CompactHistoryPhysicalRow {
-	section: "before" | "card" | "after";
-	/** The summary has no call owner; every other row carries its call id. */
-	owner: string | undefined;
-	logicalRowIndex: number;
-	wrappedSegmentIndex: number;
-}
-
-interface CompactHistoryLogicalRow {
-	text: string;
-	toolCallId: string | undefined;
-}
-
-type CompactHistoryTarget =
-	| {
-			kind: "summary";
-			physicalRow: CompactHistoryPhysicalRow;
-			presentation: CompactHistoryPresentation;
-	  }
-	| {
-			kind: "tool-call";
-			toolCallId: string;
-			physicalRow: CompactHistoryPhysicalRow;
-			presentation: CompactHistoryPresentation;
-	  };
-
-function isCompactHistoryTarget(target: unknown): target is CompactHistoryTarget {
-	if (typeof target !== "object" || target === null) return false;
-	const candidate = target as {
-		kind?: unknown;
-		toolCallId?: unknown;
-		physicalRow?: {
-			section?: unknown;
-			owner?: unknown;
-			logicalRowIndex?: unknown;
-			wrappedSegmentIndex?: unknown;
-		};
-		presentation?: { expanded?: unknown; rowExpanded?: unknown; openToolCallId?: unknown };
-	};
-	const physicalRow = candidate.physicalRow;
-	const presentation = candidate.presentation;
-	const hasValidPhysicalRow =
-		physicalRow !== undefined &&
-		(physicalRow.section === "before" || physicalRow.section === "card" || physicalRow.section === "after") &&
-		(physicalRow.owner === undefined || typeof physicalRow.owner === "string") &&
-		typeof physicalRow.logicalRowIndex === "number" &&
-		Number.isInteger(physicalRow.logicalRowIndex) &&
-		physicalRow.logicalRowIndex >= 0 &&
-		typeof physicalRow.wrappedSegmentIndex === "number" &&
-		Number.isInteger(physicalRow.wrappedSegmentIndex) &&
-		physicalRow.wrappedSegmentIndex >= 0;
-	const kindMatchesOwner =
-		(candidate.kind === "summary" && candidate.toolCallId === undefined && physicalRow?.owner === undefined) ||
-		(candidate.kind === "tool-call" &&
-			typeof candidate.toolCallId === "string" &&
-			physicalRow?.owner === candidate.toolCallId);
-	return (
-		kindMatchesOwner &&
-		hasValidPhysicalRow &&
-		presentation !== undefined &&
-		typeof presentation.expanded === "boolean" &&
-		(presentation.rowExpanded === undefined || typeof presentation.rowExpanded === "boolean") &&
-		(presentation.openToolCallId === undefined || typeof presentation.openToolCallId === "string")
-	);
 }
 
 /** Tools whose settled completion is worth a duration on the row — a
@@ -238,29 +150,22 @@ function firstErrorLine(text: string | undefined): string | undefined {
 }
 
 /**
- * One line for one call: `⏺ Bash(echo hi)`. No status word or byte count
- * (C3) — the icon alone carries success/failure/pending. A duration shows
- * only while the call is still running, or once settled for a subagent
- * (`task`) completion where the run really took measurable time; a failure
- * instead shows its first error line, and a settled call with a
- * `resultSummary` hook (ask's chosen answer, B) shows that instead.
- */
-/**
- * Leading column that says what a click on this row does, so the affordance
- * is readable from a still screenshot instead of discovered by trial: `▸`
- * opens (a collapsed group, or a call whose full card is closed), `▾` closes
- * what is currently open. Every row of a group carries one: each call is
- * clickable whether or not it has settled.
+ * Leading column for the parent row: `▸` expands its cards and `▾` collapses
+ * them. Cards have no markers or click affordances of their own.
  */
 function rowMarker(state: "open" | "closed"): string {
 	return theme.fg("dim", state === "open" ? "▾" : "▸");
 }
 
-/** Subordinate rows of an expanded group, and the open card, sit one marker
- * column plus one glyph in from the summary, so nesting is visible without
- * relying on hover. */
+/** Full cards nest one marker column plus one glyph beneath their parent row. */
 const NEST_INDENT = "   ";
 
+/**
+ * Parent row for a single call. No status word or byte count (C3): the icon
+ * carries success/failure/pending. A duration shows only while the call is
+ * running, or once a `task` completion settles; failures show their first
+ * error line and a `resultSummary` hook can show its resolved detail.
+ */
 function renderCallLine(entry: CompactCallEntry, prefix: string): string {
 	const status: ToolUIStatus = entry.outcome === "pending" ? "pending" : entry.outcome === "error" ? "error" : "done";
 	const title = formatPrimaryText(resolveActivitySummary(entry));
@@ -347,101 +252,56 @@ function renderGroupLine(entries: readonly CompactCallEntry[], expanded: boolean
 	return `${rowMarker(expanded ? "open" : "closed")} ${renderStatusLine({ icon: status, title, titleColor: "toolTitle" }, theme)}`;
 }
 
-/**
- * SGR dim (faint) wrapping a fully-rendered subordinate call line (C7's
- * two-level expansion): reopens faint after every embedded reset so the
- * row's own icon/title colors do not cancel it partway through — same idiom
- * as the composer's own focus-proxied dimming (`interactive-mode.ts`'s
- * editor-border wrap, `status-line/component.ts`'s `#dimWhileFocusProxied`).
- */
-function dimLine(line: string): string {
-	if (!line) return line;
-	return `\x1b[2m${line.replaceAll("\x1b[0m", "\x1b[0m\x1b[2m")}\x1b[22m`;
-}
-
-/**
- * No-op `ToolExecutionUi` for a card embedded by opening one call's row
- * (req 4). The click that opens it flows through `input-controller.ts`'s
- * own handler, which already requests a render immediately after invoking
- * the row's action, and an embedded card only ever wraps an already-settled
- * call (opening gates on `entryClickable`) — so none of `ToolExecutionUi`'s
- * supplementary repaint hooks (spinner ticks, an async Kitty image
- * conversion completing) have a live case to serve here.
- */
+/** No-op `ToolExecutionUi` for cards embedded beneath an expanded parent row.
+ * The parent click already requests the enclosing render. */
 const EMBEDDED_CARD_UI: ToolExecutionUi = {
 	requestRender() {},
 	requestComponentRender() {},
 	resetDisplay() {},
 };
 
-/** Per-instance click-candidate id counter (C7 hover banding) — monotonic,
- * process-lifetime unique so a retired row's id can never alias a live one. */
-let nextToolRowClickId = 1;
+/** Monotonic per-parent hover id. */
+let nextCompactToggleId = 1;
 
 /**
  * Compact (`display.toolCalls: "compact"`) and grouped (`"grouped"`) tool-call
- * row: one line per call, or — once a second call joins the same group — one
- * collapsed summary row carrying what happened. Expanded (ctrl+o, or a click
- * on the group row itself), the group row stays and the per-call lines list
- * beneath it, visually subordinate (dimmed) — two-level expansion (C7).
- * Clicking one call's own line swaps that one line for the exact
- * `ToolExecutionComponent` card `full` mode builds for that call; a second
- * click on any of the open card's rows returns it to the one-line form.
+ * row. A one-call instance uses its call row as the parent; a multi-call
+ * instance uses a summary row. Expanding either parent renders every call's
+ * full card in order beneath it. `setExpanded` receives the session-wide
+ * `ctrl+o` baseline; parent clicks record a local override through
+ * {@link getViewportClickAction}.
+ *
  * Multi-entry, toolCallId-keyed `ToolExecutionHandle`, mirroring
- * `ReadToolGroupComponent`'s shape, including its `finalize()`/`seal()` pair:
- * `finalize()` closes the group to new entries without forcing a
- * still-pending one done; `seal()` forces it done regardless (turn end,
- * abandonment). `setExpanded` drives the session-wide `ctrl+o` baseline
- * unchanged; clicks dispatch per row through {@link getViewportClickAction}.
+ * `ReadToolGroupComponent`'s `finalize()`/`seal()` pair: `finalize()` closes
+ * the group to new entries without forcing a still-pending entry done;
+ * `seal()` forces it done regardless.
  */
 export class CompactToolCallComponent extends Container implements ToolExecutionHandle {
 	#entries = new Map<string, CompactCallEntry>();
-	/** One descriptor per semantic physical row and captured presentation,
-	 * retained so re-offering the same history row preserves its Composer token. */
-	#historyTargets = new Map<string, CompactHistoryTarget>();
-	/** Logical rows whose text `Text` wraps before and after the open card. */
-	#beforeRows: CompactHistoryLogicalRow[] = [];
-	#afterRows: CompactHistoryLogicalRow[] = [];
-	/** Exact physical-row descriptors for the output of the latest `render`. */
-	#lastHistoryTargets: readonly CompactHistoryTarget[] = [];
-	#beforeText: Text;
-	#afterText: Text;
+	/** Number of width-aware physical segments occupied by the parent row in
+	 * the latest live render. */
+	#lastParentRowCount = 0;
+	#parentText: Text;
+	#parentRow = "";
+	/** Cards exist only while the effective parent state is expanded. */
+	#cards = new Map<string, ToolExecutionComponent>();
 	#expanded = false;
-	/** Per-row click override (C7) for the group's own summary line,
-	 * independent of `#expanded` (the session-wide `ctrl+o` flag
-	 * `setExpanded` tracks): `undefined` follows `#expanded`; a boolean here
-	 * wins until the next click on the summary row. Only meaningful once a
-	 * second call joins the group — a standalone row's open/closed state
-	 * lives entirely in `#openCallId` instead. */
+	/** Local state set only by a parent-row click. `undefined` follows the
+	 * session-wide `#expanded` baseline. */
 	#rowExpanded: boolean | undefined;
-	/** Click-candidate id for the group's own summary row (C7 hover
-	 * banding) — never a real agent id (the `@…:…` charset cannot collide
-	 * with one; same precedent as `PINNED_HUD_TOGGLE_ID`).
-	 * `getViewportClickAction` resolves before any registry lookup would
-	 * see it. Each entry carries its own separate id (`CompactCallEntry.clickId`)
-	 * so a per-call subordinate line never shares a hover target with the
-	 * summary or with a sibling call. */
-	#clickId = `@omp:tool-row:${nextToolRowClickId++}`;
+	#clickId = `@omp:compact-toggle:${nextCompactToggleId++}`;
 	#toolActivityVisible = true;
 	// Closed to new entries. Distinct from `#sealed`: a `finalize()`d group
-	// with a still-pending entry (e.g. a background task the turn ended
-	// without) is not yet transcript-finalized — the live update can still
-	// resolve it in place.
+	// with a still-pending entry is not yet transcript-finalized because its
+	// live result must still resolve in place.
 	#finalized = false;
 	#sealed = false;
 	#blockVersion = 0;
-	/** toolCallId of the entry whose full `ToolExecutionComponent` card is
-	 * currently embedded in place of its one-line row (req 4). At most one
-	 * entry open per instance — opening a second closes the first. */
-	#openCallId: string | undefined;
-	#openCard: ToolExecutionComponent | undefined;
 
 	constructor() {
 		super();
-		this.#beforeText = new Text("", 0, 0);
-		this.#afterText = new Text("", 0, 0);
-		this.addChild(this.#beforeText);
-		this.addChild(this.#afterText);
+		this.#parentText = new Text("", 0, 0);
+		this.addChild(this.#parentText);
 	}
 
 	/** Add a new call to this row/group. */
@@ -453,7 +313,6 @@ export class CompactToolCallComponent extends Container implements ToolExecution
 			tool,
 			args,
 			outcome: "pending",
-			clickId: `@omp:tool-row:${nextToolRowClickId++}`,
 		});
 		this.#updateDisplay();
 	}
@@ -467,6 +326,7 @@ export class CompactToolCallComponent extends Container implements ToolExecution
 		const entry = this.#entries.get(toolCallId);
 		if (!entry || entry.args === args) return;
 		entry.args = args;
+		this.#cards.get(toolCallId)?.updateArgs(args, toolCallId);
 		this.#updateDisplay();
 	}
 
@@ -477,19 +337,16 @@ export class CompactToolCallComponent extends Container implements ToolExecution
 		const entry = this.#entries.get(toolCallId);
 		if (!entry || entry.startedAtNow !== undefined) return;
 		entry.startedAtNow = performance.now();
+		this.#cards.get(toolCallId)?.setExecutionStarted(toolCallId);
 		// The row's only observable transition into "running" (C3's live
 		// duration) — nothing else would otherwise repaint it.
 		this.#updateDisplay();
 	}
 
 	/**
-	 * Settle one call. `result`'s shape matches `CompactCallResult` (image
-	 * blocks included) so it stores verbatim into `rawResult` and, once this
-	 * call opens (req 4), replays into its `ToolExecutionComponent` card
-	 * exactly as `full` mode would have built it — not a text-only
-	 * reconstruction that drops images. Forwards to the open card in place
-	 * when this is the entry currently open (a hub/todo-style displaceable
-	 * result can settle more than once).
+	 * Settle one call. The result is retained verbatim so an expanded parent
+	 * can replay it into the same `ToolExecutionComponent` card `full` mode
+	 * uses, including image blocks.
 	 */
 	updateResult(result: CompactCallResult, isPartial = false, toolCallId?: string): void {
 		if (!toolCallId || isPartial) return;
@@ -504,7 +361,7 @@ export class CompactToolCallComponent extends Container implements ToolExecution
 		entry.resultSummary = summary?.detail ?? summary?.label;
 		entry.durationMs = entry.startedAtNow !== undefined ? performance.now() - entry.startedAtNow : undefined;
 		entry.rawResult = result;
-		if (this.#openCallId === toolCallId) this.#openCard?.updateResult(result, false, toolCallId);
+		this.#cards.get(toolCallId)?.updateResult(result, false, toolCallId);
 		this.#blockVersion++;
 		this.#updateDisplay();
 	}
@@ -522,20 +379,11 @@ export class CompactToolCallComponent extends Container implements ToolExecution
 		this.#updateDisplay();
 	}
 
-	/**
-	 * Click-to-expand (C7) for the group's own summary line: flips this
-	 * row's own expansion of its per-call breakdown, independent of the
-	 * session-wide flag `setExpanded` tracks (`ctrl+o`) — clicking the
-	 * summary never expands a sibling group, and a later `ctrl+o` still
-	 * drives every untouched group's baseline exactly as before. Collapsing
-	 * retracts any open subordinate call's card: a collapsed row has no
-	 * room left to keep showing one (Component lifecycle constraints).
-	 */
+	/** Toggle the parent relative to its currently visible state. */
 	toggleExpanded(): void {
-		const effective = this.#rowExpanded ?? this.#expanded;
-		this.#rowExpanded = !effective;
-		this.#blockVersion++;
-		this.#updateDisplay();
+		const expanded = !this.#effectiveExpanded();
+		this.#setClickedExpansion(expanded);
+		logger.debug("tool row toggle", { calls: this.#entries.size, expanded });
 	}
 
 	setToolActivityVisible(visible: boolean): void {
@@ -543,260 +391,66 @@ export class CompactToolCallComponent extends Container implements ToolExecution
 		super.invalidate();
 	}
 
-	/** C7's clickability predicate: every call is clickable, settled or not.
-	 * Its card always shows more than the row — full arguments instead of the
-	 * row's truncated `Tool(arg…)`, plus the result once there is one; a call
-	 * opened while still running fills in its result in place, because
-	 * {@link updateResult} forwards to the open card. */
-	#clickable(): boolean {
-		return this.#entries.size > 0;
+	#effectiveExpanded(): boolean {
+		return this.#rowExpanded ?? this.#expanded;
 	}
 
-	/** Resolve an unwrapped logical row before a render has supplied its
-	 * width-dependent physical target map. Only rows above a card can be
-	 * addressed this way: card and after-card row heights require render. */
-	#unrenderedBeforeTarget(local: number): CompactHistoryTarget | undefined {
-		const row = this.#beforeRows[local];
-		if (!row) return undefined;
-		return this.#historyTargetFor(
-			row.toolCallId,
-			{
-				expanded: this.#expanded,
-				rowExpanded: this.#rowExpanded,
-				openToolCallId: this.#openCallId,
-			},
-			"before",
-			local,
-			0,
-		);
+	/** Record the local state chosen by a live parent-row click. */
+	#setClickedExpansion(expanded: boolean): void {
+		if (this.#rowExpanded === expanded) return;
+		this.#rowExpanded = expanded;
+		this.#blockVersion++;
+		this.#updateDisplay();
 	}
 
-	/**
-	 * Resolve the click target for one row-local index. A completed render
-	 * supplies exact physical rows; before render, only unwrapped before rows
-	 * have an addressable logical index. Shared by {@link getClickFocusAgentIds}
-	 * and {@link getViewportClickAction} so hover and click always agree.
-	 */
+	/** A completed render gives every physical parent segment a target. Before
+	 * that render, only the logical parent row at local zero is addressable. */
+	#isParentRow(local: number): boolean {
+		if (!this.#toolActivityVisible || !Number.isInteger(local) || local < 0 || !this.#parentRow) return false;
+		return this.#lastParentRowCount === 0 ? local === 0 : local < this.#lastParentRowCount;
+	}
+
+	/** Resolve a live parent-row target. Cards are never click or hover targets. */
 	#rowTarget(local: number): { id: string; onClick: () => void } | undefined {
-		const target =
-			this.historyTarget(local) ??
-			(this.#lastHistoryTargets.length === 0 ? this.#unrenderedBeforeTarget(local) : undefined);
-		if (target === undefined) return undefined;
-		if (target.kind === "summary") {
-			return { id: this.#clickId, onClick: () => this.applyHistoryTarget(target) };
-		}
-		const entry = this.#entries.get(target.toolCallId);
-		if (!entry) return undefined;
-		return { id: entry.clickId, onClick: () => this.applyHistoryTarget(target) };
+		if (!this.#isParentRow(local)) return undefined;
+		return { id: this.#clickId, onClick: () => this.toggleExpanded() };
 	}
 
-	/** Click-candidate id for hover banding (C7), resolved per row so
-	 * hovering one call's own line inside an expanded group — or its open
-	 * card, once opened (req 4) — bands only that line/card, never the
-	 * whole group span (req 1). `local` is the row-local index within this
-	 * component's own last rendered output; the single no-arg pre-check
-	 * `Composer.renderFrame` makes resolves against row 0 (always the
-	 * summary, or the only row, when nothing is hovered yet). */
+	/** Every physical segment of the parent shares one hover candidate; cards
+	 * return no candidate. */
 	getClickFocusAgentIds(local?: number): string[] {
 		const row = Number.isInteger(local) && (local as number) >= 0 ? (local as number) : 0;
 		const target = this.#rowTarget(row);
 		return target ? [target.id] : [];
 	}
 
-	/** Click action (C7), resolved per row: a click on the group's own
-	 * summary line toggles the group; a click on one call's own line (or its
-	 * open card) opens/closes just that call (req 4). `undefined` when
-	 * nothing in this row/group is clickable. */
+	/** Parent-row click action. */
 	getViewportClickAction(): ((local: number) => void) | undefined {
-		if (!this.#clickable()) return undefined;
+		if (this.#entries.size === 0) return undefined;
 		return (local: number) => {
 			const row = Number.isInteger(local) && local >= 0 ? local : 0;
 			this.#rowTarget(row)?.onClick();
 		};
 	}
 
-	/**
-	 * Resolve a physical row against the exact target map captured by the
-	 * latest render. Retired rows retain that descriptor in Composer's token
-	 * cache, so later presentation changes cannot reinterpret them.
-	 */
-	historyTarget(local: number): CompactHistoryTarget | undefined {
-		if (!Number.isInteger(local) || local < 0) return undefined;
-		return this.#lastHistoryTargets[local];
-	}
-
-	#historyTargetsFor(
-		rows: readonly CompactHistoryLogicalRow[],
-		section: CompactHistoryPhysicalRow["section"],
-		width: number,
-		presentation: CompactHistoryPresentation,
-	): CompactHistoryTarget[] {
-		const targets: CompactHistoryTarget[] = [];
-		const contentWidth = Math.max(1, width);
-		for (let logicalRowIndex = 0; logicalRowIndex < rows.length; logicalRowIndex++) {
-			const row = rows[logicalRowIndex]!;
-			const segmentCount = wrapTextWithAnsi(replaceTabs(row.text), contentWidth).length;
-			for (let wrappedSegmentIndex = 0; wrappedSegmentIndex < segmentCount; wrappedSegmentIndex++) {
-				targets.push(
-					this.#historyTargetFor(row.toolCallId, presentation, section, logicalRowIndex, wrappedSegmentIndex),
-				);
-			}
-		}
-		return targets;
-	}
-
-	#historyTargetFor(
-		toolCallId: string | undefined,
-		presentation: CompactHistoryPresentation,
-		section: CompactHistoryPhysicalRow["section"],
-		logicalRowIndex: number,
-		wrappedSegmentIndex: number,
-	): CompactHistoryTarget {
-		const physicalRow: CompactHistoryPhysicalRow = {
-			section,
-			owner: toolCallId,
-			logicalRowIndex,
-			wrappedSegmentIndex,
-		};
-		const key = JSON.stringify([
-			toolCallId === undefined ? "summary" : "tool-call",
-			toolCallId,
-			presentation.expanded,
-			presentation.rowExpanded,
-			presentation.openToolCallId,
-			physicalRow.section,
-			physicalRow.owner,
-			physicalRow.logicalRowIndex,
-			physicalRow.wrappedSegmentIndex,
-		]);
-		const existing = this.#historyTargets.get(key);
-		if (existing !== undefined) return existing;
-		const target =
-			toolCallId === undefined
-				? { kind: "summary" as const, physicalRow, presentation: { ...presentation } }
-				: { kind: "tool-call" as const, toolCallId, physicalRow, presentation: { ...presentation } };
-		this.#historyTargets.set(key, target);
-		return target;
-	}
-
-	/** Apply a captured semantic history action to this component's current state. */
-	applyHistoryTarget(target: unknown): void {
-		if (!isCompactHistoryTarget(target)) return;
-		if (target.kind === "summary") {
-			if (this.#entries.size > 1) this.toggleExpanded();
-			return;
-		}
-		if (!this.#entries.has(target.toolCallId)) return;
-		if (this.#openCallId === target.toolCallId) this.#closeOpenCard();
-		else this.#openCall(target.toolCallId);
-	}
-
-	/**
-	 * Re-create this retired group at the live transcript bottom from its
-	 * emitted presentation, then apply the captured semantic action. Native
-	 * scrollback cannot change in place, and fresh click ids prevent its hover
-	 * band from aliasing the raised rows.
-	 */
-	raiseFromHistory(target: unknown): Component | undefined {
-		if (!isCompactHistoryTarget(target) || this.#entries.size === 0) return undefined;
-		const raised = new CompactToolCallComponent();
-		for (const entry of this.#entries.values()) {
-			raised.#entries.set(entry.toolCallId, { ...entry, clickId: `@omp:tool-row:${nextToolRowClickId++}` });
-		}
-		raised.#expanded = target.presentation.expanded;
-		raised.#rowExpanded = target.presentation.rowExpanded;
-		raised.#toolActivityVisible = this.#toolActivityVisible;
-		raised.#finalized = this.#finalized;
-		raised.#sealed = this.#sealed;
-		raised.#blockVersion = this.#blockVersion;
-		const openToolCallId = target.presentation.openToolCallId;
-		if (openToolCallId !== undefined && raised.#entries.has(openToolCallId)) raised.#openCall(openToolCallId);
-		else raised.#updateDisplay();
-		raised.applyHistoryTarget(target);
-		return raised;
-	}
-
-	/**
-	 * Embed the stock `ToolExecutionComponent` card `full` mode would have
-	 * built for this call (req 4), replacing its own one-line row. Reuses the
-	 * class rather than duplicating its rendering; a no-op UI stands in for
-	 * the live composer (`EMBEDDED_CARD_UI`) since opening flows entirely
-	 * through a click, and `input-controller.ts`'s own handler already
-	 * requests a render immediately after invoking it. A call still in flight
-	 * opens to its arguments; its result lands via {@link updateResult},
-	 * which forwards to the open card.
-	 */
-	#openCall(toolCallId: string): void {
-		const entry = this.#entries.get(toolCallId);
-		if (!entry || this.#openCallId === toolCallId) return;
-		this.#closeOpenCardInternal();
-		const card = new ToolExecutionComponent(
-			entry.toolName,
-			entry.args,
-			{},
-			entry.tool,
-			EMBEDDED_CARD_UI,
-			undefined,
-			entry.toolCallId,
-		);
-		card.setExpanded(true);
-		card.setArgsComplete(entry.toolCallId);
-		card.setExecutionStarted(entry.toolCallId);
-		if (entry.rawResult) card.updateResult(entry.rawResult, false, entry.toolCallId);
-		this.#openCallId = toolCallId;
-		this.#openCard = card;
-		this.#blockVersion++;
-		this.#updateDisplay();
-	}
-
-	/** Close the open call's card (the "second click" of req 4). */
-	#closeOpenCard(): void {
-		if (this.#openCallId === undefined) return;
-		this.#closeOpenCardInternal();
-		this.#blockVersion++;
-		this.#updateDisplay();
-	}
-
-	/** Dispose and detach the open card without touching `#blockVersion` or
-	 * repainting — the caller (an explicit close, a group collapse, or a
-	 * pruned entry) owns that. Disposing stops its spinner/ticker
-	 * registration (Component lifecycle constraints); idempotent. */
-	#closeOpenCardInternal(): void {
-		if (this.#openCard) {
-			this.#openCard.dispose();
-			this.#openCard = undefined;
-		}
-		this.#openCallId = undefined;
-	}
-
 	override render(width: number): readonly string[] {
 		if (!this.#toolActivityVisible) {
-			this.#lastHistoryTargets = [];
+			this.#lastParentRowCount = 0;
 			return [];
 		}
-		const presentation: CompactHistoryPresentation = {
-			expanded: this.#expanded,
-			rowExpanded: this.#rowExpanded,
-			openToolCallId: this.#openCallId,
-		};
-		const beforeLines = this.#beforeText.render(width);
-		const openToolCallId = this.#openCallId;
-		const cardLines =
-			this.#openCard && openToolCallId !== undefined
-				? this.#openCard.render(Math.max(1, width - NEST_INDENT.length)).map(line => `${NEST_INDENT}${line}`)
-				: [];
-		const afterLines = this.#afterText.render(width);
-		const beforeTargets = this.#historyTargetsFor(this.#beforeRows, "before", width, presentation);
-		const cardTargets =
-			openToolCallId === undefined
-				? []
-				: cardLines.map((_line, logicalRowIndex) =>
-						this.#historyTargetFor(openToolCallId, presentation, "card", logicalRowIndex, 0),
-					);
-		const afterTargets = this.#historyTargetsFor(this.#afterRows, "after", width, presentation);
-		const lines = [...beforeLines, ...cardLines, ...afterLines];
-		this.#lastHistoryTargets = [...beforeTargets, ...cardTargets, ...afterTargets];
-		return lines;
+		const parentLines = this.#parentText.render(width);
+		this.#lastParentRowCount = parentLines.length;
+		const cardLines: string[] = [];
+		if (this.#effectiveExpanded()) {
+			for (const entry of this.#entries.values()) {
+				const card = this.#cards.get(entry.toolCallId);
+				if (!card) continue;
+				for (const line of card.render(Math.max(1, width - NEST_INDENT.length))) {
+					cardLines.push(`${NEST_INDENT}${line}`);
+				}
+			}
+		}
+		return [...parentLines, ...cardLines];
 	}
 
 	/** Calls never park as background tasks; the handle method is a no-op. */
@@ -813,11 +467,9 @@ export class CompactToolCallComponent extends Container implements ToolExecution
 	}
 
 	isTranscriptBlockFinalized(): boolean {
-		// An open card holds the block in the mutable viewport even past a seal:
-		// retirement prints the rows into native scrollback, where nothing can
-		// retract them — the group would stay frozen open, unclickable, with no
-		// way back to its one-liner. The closing click releases the hold.
-		if (this.#openCallId !== undefined) return false;
+		// Only a click-created expansion keeps an otherwise final block mutable:
+		// ctrl+o's session-wide baseline may expand cards in scrollback.
+		if (this.#rowExpanded === true && this.#entries.size > 0) return false;
 		if (this.#sealed) return true;
 		if (!this.#finalized) return false;
 		for (const entry of this.#entries.values()) {
@@ -834,74 +486,74 @@ export class CompactToolCallComponent extends Container implements ToolExecution
 		return this;
 	}
 
-	/**
-	 * Lay out the group's collapsed summary and expanded per-call rows (C7's
-	 * two-level expansion), then reconcile the child list with the open
-	 * card, if any. `#openCallId` pointing at an entry that no longer exists
-	 * (pruned via `removeEntry`) or at a now-collapsed group retracts the
-	 * card here rather than at every call site that could cause it — this is
-	 * the one place display state actually gets read for rendering.
-	 */
-	#updateDisplay(): void {
-		// A layout change makes the prior render's physical row indices invalid
-		// before callers can observe the new logical rows.
-		this.#lastHistoryTargets = [];
-		if (this.#openCallId !== undefined && !this.#entries.has(this.#openCallId)) {
-			this.#closeOpenCardInternal();
-		}
-		const entries = [...this.#entries.values()];
-		let beforeRows: CompactHistoryLogicalRow[];
-		const afterRows: CompactHistoryLogicalRow[] = [];
-		if (entries.length > 1) {
-			const expanded = this.#rowExpanded ?? this.#expanded;
-			if (!expanded) {
-				if (this.#openCallId !== undefined) this.#closeOpenCardInternal();
-				beforeRows = [{ text: renderGroupLine(entries, false), toolCallId: undefined }];
-			} else {
-				beforeRows = [{ text: renderGroupLine(entries, true), toolCallId: undefined }];
-				let sink = beforeRows;
-				for (const entry of entries) {
-					const isOpen = entry.toolCallId === this.#openCallId;
-					const marker = rowMarker(isOpen ? "open" : "closed");
-					// The open call keeps its own header above the card, so the row
-					// that closes it again is on screen and marked `▾`.
-					sink.push({
-						text: dimLine(renderCallLine(entry, `${NEST_INDENT}${marker} `)),
-						toolCallId: entry.toolCallId,
-					});
-					if (isOpen) sink = afterRows;
-				}
-			}
-		} else {
-			const entry = entries[0];
-			if (!entry) beforeRows = [];
-			else {
-				const isOpen = this.#openCallId === entry.toolCallId;
-				const marker = rowMarker(isOpen ? "open" : "closed");
-				beforeRows = [{ text: renderCallLine(entry, `${marker} `), toolCallId: entry.toolCallId }];
-			}
-		}
-		this.#beforeRows = beforeRows;
-		this.#afterRows = afterRows;
-		this.#beforeText.setText(beforeRows.map(row => row.text).join("\n"));
-		this.#afterText.setText(afterRows.map(row => row.text).join("\n"));
-		this.#syncChildren();
+	#createCard(entry: CompactCallEntry): ToolExecutionComponent {
+		const card = new ToolExecutionComponent(
+			entry.toolName,
+			entry.args,
+			{},
+			entry.tool,
+			EMBEDDED_CARD_UI,
+			undefined,
+			entry.toolCallId,
+		);
+		card.setExpanded(true);
+		card.setArgsComplete(entry.toolCallId);
+		card.setExecutionStarted(entry.toolCallId);
+		if (entry.rawResult) card.updateResult(entry.rawResult, false, entry.toolCallId);
+		return card;
 	}
 
-	/** Reconcile `this.children` with the open card's presence, through the
-	 * base class's own `addChild`/`clear` so its `ignoreTight` propagation
-	 * stays correct — `render` above reads `#beforeText`/`#openCard`/
-	 * `#afterText` directly, but `dispose()` (inherited, cascading to every
-	 * child) needs the open card in the child list to reach it. */
-	#syncChildren(): void {
+	#syncCards(entries: readonly CompactCallEntry[], expanded: boolean): void {
+		if (!expanded) {
+			this.#disposeCards();
+			return;
+		}
+		for (const [toolCallId, card] of this.#cards) {
+			if (this.#entries.has(toolCallId)) continue;
+			card.dispose();
+			this.#cards.delete(toolCallId);
+		}
+		for (const entry of entries) {
+			if (!this.#cards.has(entry.toolCallId)) this.#cards.set(entry.toolCallId, this.#createCard(entry));
+		}
+	}
+
+	#disposeCards(): void {
+		for (const card of this.#cards.values()) card.dispose();
+		this.#cards.clear();
+	}
+
+	/** Update the sole parent row, then create or dispose the complete ordered
+	 * card set according to its effective expansion. */
+	#updateDisplay(): void {
+		// A layout change invalidates the prior physical parent segment count.
+		this.#lastParentRowCount = 0;
+		const entries = [...this.#entries.values()];
+		const expanded = this.#effectiveExpanded();
+		if (entries.length > 1) {
+			this.#parentRow = renderGroupLine(entries, expanded);
+		} else {
+			const entry = entries[0];
+			this.#parentRow = entry ? renderCallLine(entry, `${rowMarker(expanded ? "open" : "closed")} `) : "";
+		}
+		this.#parentText.setText(this.#parentRow);
+		this.#syncCards(entries, expanded);
+		this.#syncChildren(entries);
+	}
+
+	/** Keep every live card in the inherited child list so generic disposal
+	 * reaches it and stops any spinner registration. */
+	#syncChildren(entries: readonly CompactCallEntry[]): void {
 		this.clear();
-		this.addChild(this.#beforeText);
-		if (this.#openCard) this.addChild(this.#openCard);
-		this.addChild(this.#afterText);
+		this.addChild(this.#parentText);
+		for (const entry of entries) {
+			const card = this.#cards.get(entry.toolCallId);
+			if (card) this.addChild(card);
+		}
 	}
 }
 
-/** Mutable reference to the currently open group; owned by each call site. */
+/** Mutable reference to the currently active group; owned by each call site. */
 export interface CompactToolGroupHolder {
 	current: CompactToolCallComponent | undefined;
 }

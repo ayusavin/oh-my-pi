@@ -306,13 +306,10 @@ describe("composer click-to-toggle through a real renderFrame", () => {
 		}
 	});
 
-	// Regression: a compact group's own row-to-entry mapping must stay
-	// correct when the group's rendered span does not start at viewport row
-	// 0 — `routeViewportClickAction`'s span-local offset composes with the
-	// group's own per-row dispatch (`CompactToolCallComponent`'s row target
-	// resolution), so a click well below the group's first row still opens
-	// the entry that row actually belongs to.
-	it("opens the correct subordinate call when the group's span does not start at viewport row 0", () => {
+	// Regression: the viewport click action composes the group's span-local
+	// offset when the group starts below viewport row 0. Only the parent row
+	// toggles the group; its rendered tool cards do not handle clicks.
+	it("toggles from a parent row below viewport row 0 and ignores clicks on its cards", () => {
 		const term = new VirtualTerminal(80, 24);
 		const composer = new Composer({ terminal: term, preferences: { ...COMPOSER_DEFAULTS, quiet: true } });
 		composer.start();
@@ -324,22 +321,31 @@ describe("composer click-to-toggle through a real renderFrame", () => {
 			const group = holder.current!;
 			group.updateResult({ content: [{ type: "text", text: "out one" }], isError: false }, false, "call-1");
 			group.updateResult({ content: [{ type: "text", text: "out two" }], isError: false }, false, "call-2");
-			// Padding rows ahead of the transcript push the group's own span off viewport row 0.
+			// Padding rows ahead of the transcript push the group's span below viewport row 0.
 			composer.setRuntimeChildren([new CountingBlock(["padding a", "padding b", "padding c"]), transcript]);
 
 			let frame = composer.renderFrame({ columns: 80, rows: 24 });
 			const groupRow = frame.viewport.findIndex(line => line.includes("shell command"));
 			expect(groupRow).toBeGreaterThan(0);
-			composer.viewportClickAction(groupRow)!(groupRow); // expand the group
+			composer.viewportClickAction(groupRow)!(groupRow);
 
 			frame = composer.renderFrame({ columns: 80, rows: 24 });
+			let viewport = Bun.stripANSI(frame.viewport.join("\n"));
+			expect(viewport).toContain("out one");
+			expect(viewport).toContain("out two");
+
 			const call2Row = frame.viewport.findIndex(line => Bun.stripANSI(line).includes("echo two"));
 			expect(call2Row).toBeGreaterThan(groupRow);
-			composer.viewportClickAction(call2Row)!(call2Row); // click call-2's own dimmed line
+			composer.viewportClickAction(call2Row)?.(call2Row);
 
-			const opened = Bun.stripANSI(composer.renderFrame({ columns: 80, rows: 24 }).viewport.join("\n"));
-			expect(opened).toContain("out two");
-			expect(opened).not.toContain("out one");
+			viewport = Bun.stripANSI(composer.renderFrame({ columns: 80, rows: 24 }).viewport.join("\n"));
+			expect(viewport).toContain("out one");
+			expect(viewport).toContain("out two");
+
+			composer.viewportClickAction(groupRow)!(groupRow);
+			viewport = Bun.stripANSI(composer.renderFrame({ columns: 80, rows: 24 }).viewport.join("\n"));
+			expect(viewport).toContain("2 shell commands");
+			expect(viewport).not.toContain("out two");
 		} finally {
 			composer.stop();
 		}

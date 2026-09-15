@@ -178,6 +178,7 @@ const TINY_TITLE_PROGRESS_REVEAL_DELAY_MS = 1_000;
 // deliberate human double-tap is always tens of milliseconds apart.
 const LEFT_DOUBLE_TAP_MIN_GAP_MS = 40;
 const LEFT_DOUBLE_TAP_MAX_GAP_MS = 500;
+const TOOL_ROW_INTERACTION_LOG_INTERVAL_MS = 30_000;
 
 export class InputController {
 	constructor(
@@ -210,12 +211,33 @@ export class InputController {
 
 	/** Click-candidate id the live hover band currently tracks. */
 	#lastHoverClickId: string | undefined;
-	/** Opaque history target directly repainted in the normal buffer. */
-	#lastHistoryHoverTarget: unknown | undefined;
+	#toolRowInteraction = {
+		inlineMouseReports: 0,
+		motionReports: 0,
+		motionReportsResolved: 0,
+		leftClicks: 0,
+		clicksResolved: 0,
+		clicksResolvedNoAction: 0,
+	};
+	#lastLoggedToolRowInteraction = {
+		inlineMouseReports: 0,
+		motionReports: 0,
+		motionReportsResolved: 0,
+		leftClicks: 0,
+		clicksResolved: 0,
+		clicksResolvedNoAction: 0,
+	};
+	#lastToolRowInteractionLogAt = 0;
+	#disposed = false;
 
 	/** Return the last full editor snapshot delivered by its change contract. */
 	getDraftText(): string {
 		return this.#draftText ?? this.ctx.editor.getText();
+	}
+	dispose(): void {
+		if (this.#disposed) return;
+		this.#disposed = true;
+		this.#flushToolRowInteraction(true);
 	}
 
 	// Tap counter for the double-← gesture; reset whenever a quiet gap
@@ -675,64 +697,48 @@ export class InputController {
 	 * the editor as typed input; clicks on chrome simply swallow.
 	 */
 	#handleInlineMouse(data: string): { consume?: boolean; data?: string } | undefined {
-		if (!data.startsWith("\x1b[<")) return undefined;
-		if (!settings.get("tui.mouse")) return undefined;
+		if (this.#disposed || !data.startsWith("\x1b[<")) return undefined;
+		if (!settings.get("tui.mouse") || this.ctx.mouseCaptureSuspended) return undefined;
 		if (this.ctx.ui.hasOverlay()) return undefined;
 		const event = parseSgrMouse(data);
 		if (!event) return undefined;
-		if (event.motion) this.#updateHoverHighlight(event.row);
-		else if (event.leftClick) this.#handleViewportClick(event.row);
+		this.#toolRowInteraction.inlineMouseReports += 1;
+		if (event.motion) {
+			this.#toolRowInteraction.motionReports += 1;
+			if (this.#updateHoverHighlight(event.row)) this.#toolRowInteraction.motionReportsResolved += 1;
+		} else if (event.leftClick) {
+			this.#toolRowInteraction.leftClicks += 1;
+			const result = this.#handleViewportClick(event.row);
+			if (result.resolved) {
+				this.#toolRowInteraction.clicksResolved += 1;
+				if (!result.acted) this.#toolRowInteraction.clicksResolvedNoAction += 1;
+			}
+			logger.debug("tool row click", { row: event.row, resolved: result.resolved, acted: result.acted });
+		}
+		this.#flushToolRowInteraction();
 		return { consume: true };
 	}
 
-	/**
-	 * Route motion through the authoritative history ledger before the mutable
-	 * viewport: replay can bottom-split history into the viewport's leading
-	 * rows, where both mappings otherwise have a local index.
-	 */
-	#updateHoverHighlight(screenRow: number): void {
-		const target = this.ctx.ui.historyRowTarget(screenRow);
-		if (target !== undefined) {
-			const clearedViewport = this.#clearViewportHover();
-			if (target === this.#lastHistoryHoverTarget) {
-				this.ctx.ui.setHistoryHoverTarget(target);
-				if (clearedViewport) this.ctx.ui.requestRender();
-				return;
-			}
-			this.#lastHistoryHoverTarget = target;
-			this.ctx.ui.setHistoryHoverTarget(target);
-			if (clearedViewport) this.ctx.ui.requestRender();
-			return;
-		}
+	/** Update the hover band only for a row in the live mutable viewport. */
+	#updateHoverHighlight(screenRow: number): boolean {
 		const local = this.#viewportLocalRow(screenRow);
-		if (local !== undefined) {
-			const clearedHistory = this.#clearHistoryHover();
-			const hovered = this.ctx.resolveViewportClickCandidates(local)[0];
-			if (hovered === this.#lastHoverClickId) {
-				if (clearedHistory) this.ctx.ui.requestRender();
-				return;
-			}
-			this.#lastHoverClickId = hovered;
-			this.ctx.setClickHoverId(hovered);
-			this.ctx.ui.requestRender();
-			return;
+		if (local === undefined) {
+			const clearedViewport = this.#clearViewportHover();
+			if (clearedViewport) this.ctx.ui.requestRender();
+			return false;
 		}
-		const clearedViewport = this.#clearViewportHover();
-		this.#clearHistoryHover();
-		if (clearedViewport) this.ctx.ui.requestRender();
+		const hovered = this.ctx.resolveViewportClickCandidates(local)[0];
+		if (hovered === this.#lastHoverClickId) return hovered !== undefined;
+		this.#lastHoverClickId = hovered;
+		this.ctx.setClickHoverId(hovered);
+		this.ctx.ui.requestRender();
+		return hovered !== undefined;
 	}
 
 	#clearViewportHover(): boolean {
 		if (this.#lastHoverClickId === undefined) return false;
 		this.#lastHoverClickId = undefined;
 		this.ctx.setClickHoverId(undefined);
-		return true;
-	}
-
-	#clearHistoryHover(): boolean {
-		if (this.#lastHistoryHoverTarget === undefined) return false;
-		this.#lastHistoryHoverTarget = undefined;
-		this.ctx.ui.setHistoryHoverTarget(undefined);
 		return true;
 	}
 
@@ -745,45 +751,24 @@ export class InputController {
 		return viewport.length === 0 || local < 0 || local >= viewport.length ? undefined : local;
 	}
 
-	#viewportCandidates(screenRow: number): string[] {
-		const local = this.#viewportLocalRow(screenRow);
-		return local === undefined ? [] : this.ctx.resolveViewportClickCandidates(local);
-	}
-
-	/**
-	 * Route a left click through the authoritative history ledger before the
-	 * mutable viewport. A history target resolves only when the event arrives,
-	 * never from a closure stored with the retired row.
-	 */
-	#handleViewportClick(screenRow: number): void {
-		const target = this.ctx.ui.historyRowTarget(screenRow);
-		if (target !== undefined) {
-			const clearedViewport = this.#clearViewportHover();
-			this.#clearHistoryHover();
-			const action = this.ctx.resolveHistoryClickAction(target);
-			if (action !== undefined) {
-				action();
-				this.ctx.ui.requestRender();
-			} else if (clearedViewport) {
-				this.ctx.ui.requestRender();
-			}
-			return;
-		}
+	/** Route a left click only through the live mutable viewport. */
+	#handleViewportClick(screenRow: number): { resolved: boolean; acted: boolean } {
 		const local = this.#viewportLocalRow(screenRow);
 		if (local !== undefined) {
-			this.#clearHistoryHover();
+			const candidates = this.ctx.resolveViewportClickCandidates(local);
 			const action = this.ctx.resolveViewportClickAction(local);
-			if (action === undefined) {
-				this.#focusClickedAgent(screenRow);
-				return;
+			if (action !== undefined) {
+				action(local);
+				this.ctx.ui.requestRender();
+				const resolved = candidates.length > 0;
+				return { resolved, acted: resolved };
 			}
-			action(local);
-			this.ctx.ui.requestRender();
-			return;
+			if (candidates.length === 0) return { resolved: false, acted: false };
+			return { resolved: true, acted: this.#focusClickedAgent(candidates) };
 		}
 		const clearedViewport = this.#clearViewportHover();
-		this.#clearHistoryHover();
 		if (clearedViewport) this.ctx.ui.requestRender();
+		return { resolved: false, acted: false };
 	}
 
 	/**
@@ -794,12 +779,9 @@ export class InputController {
 	 */
 	clearHoverHighlight(): void {
 		this.#lastHoverClickId = undefined;
-		this.#lastHistoryHoverTarget = undefined;
 	}
 
-	#focusClickedAgent(screenRow: number): void {
-		const candidates = this.#viewportCandidates(screenRow);
-		if (candidates.length === 0) return;
+	#focusClickedAgent(candidates: readonly string[]): boolean {
 		const refs = AgentRegistry.global().list();
 		const scoped = refs.filter(ref => candidates.includes(ref.id));
 		// A live agent wins over the expander sentinel: task names are
@@ -807,7 +789,7 @@ export class InputController {
 		// row itself names no agent and still toggles.
 		if (candidates.includes(PINNED_HUD_TOGGLE_ID) && scoped.length === 0) {
 			this.ctx.togglePinnedHudExpanded();
-			return;
+			return true;
 		}
 		// No global fallback: when every candidate is gone (aborted, released),
 		// focusing an unrelated recent agent would open something other than
@@ -815,22 +797,54 @@ export class InputController {
 		const nextId = pickRecentFocusableAgentId(scoped, this.ctx.focusedAgentId);
 		if (nextId === undefined) {
 			this.ctx.showStatus("That subagent is gone — open the hub for live agents");
-			return;
+			return false;
 		}
-		this.#focusResolvedAgent(nextId);
+		return this.#focusResolvedAgent(nextId);
 	}
 
 	/** Focus a resolved agent id, ignoring already-viewing and surfacing errors as status. */
-	#focusResolvedAgent(nextId: string): void {
+	#focusResolvedAgent(nextId: string): boolean {
 		if (nextId === this.ctx.focusedAgentId) {
 			// Reaffirming the current view is still the user's latest click: a
 			// parked agent reviving from an older click must not land over it.
 			this.ctx.invalidatePendingFocus();
-			return;
+			return true;
 		}
 		void this.ctx.focusAgentSession(nextId).catch((error: unknown) => {
 			this.ctx.showStatus(error instanceof Error ? error.message : String(error));
 		});
+		return true;
+	}
+
+	#flushToolRowInteraction(finalFlush: boolean = false): void {
+		const counters = this.#toolRowInteraction;
+		const logged = this.#lastLoggedToolRowInteraction;
+		if (
+			counters.inlineMouseReports === logged.inlineMouseReports &&
+			counters.motionReports === logged.motionReports &&
+			counters.motionReportsResolved === logged.motionReportsResolved &&
+			counters.leftClicks === logged.leftClicks &&
+			counters.clicksResolved === logged.clicksResolved &&
+			counters.clicksResolvedNoAction === logged.clicksResolvedNoAction
+		) {
+			return;
+		}
+		const now = Date.now();
+		if (
+			!finalFlush &&
+			this.#lastToolRowInteractionLogAt !== 0 &&
+			now - this.#lastToolRowInteractionLogAt < TOOL_ROW_INTERACTION_LOG_INTERVAL_MS
+		) {
+			return;
+		}
+		logger.debug("tool row interaction", { ...counters });
+		logged.inlineMouseReports = counters.inlineMouseReports;
+		logged.motionReports = counters.motionReports;
+		logged.motionReportsResolved = counters.motionReportsResolved;
+		logged.leftClicks = counters.leftClicks;
+		logged.clicksResolved = counters.clicksResolved;
+		logged.clicksResolvedNoAction = counters.clicksResolvedNoAction;
+		this.#lastToolRowInteractionLogAt = now;
 	}
 
 	/**

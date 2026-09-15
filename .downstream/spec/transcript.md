@@ -164,35 +164,31 @@ subagent: each renders with the human name of the work it carries, with the inte
 in the expanded form. `Background job completed [bash] bg_10` fails this; the same row naming the
 command or the job's own label passes.
 
-**C7. Every row of a group is clickable.** Clicking a collapsed row expands it and clicking again
-collapses it, while the keyboard expansion (`ctrl+o`) keeps working unchanged. A call is clickable
-whether or not it has settled: its card always carries more than its row — the full arguments the row
-truncated, plus the result once there is one, which lands in the card if it is already open. Text
-selection must survive (`tui.mouse` puts native selection on shift+drag). Hovering a clickable row
-marks only that row — a band plus an underline, so the mark reads as a link rather than a selection —
-never a sibling row sharing its rendered block. A grouped row's own two levels each carry this
-independently: expanding the group keeps its
-summary row in place and lists one dimmed line per call beneath it (never replacing the summary the
-way a flat per-call list would), and clicking one call's own line — dimmed inside an expanded group, or
-a standalone row — swaps that one line for the exact card `full` mode would have
-built for it (arguments plus output), reusing that card's own class rather than duplicating its
-rendering; a second click on any of that open card's own rows returns it to the one-line form. This
-two-level shape (summary kept, per-call lines dimmed, per-call click-to-open-a-full-card) is this
-fork's own contract, not sourced from Claude Code: upstream's own documentation confirms click-to-
-expand only at the single collapsed-row level (evidence below) and does not publish how it lays out an
-expanded multi-call group or how it styles hover, so this fork decided that shape directly rather than
-infer it from an undocumented surface.
+**C7. A grouped run has one parent row and one target.** With `display.toolCalls: "grouped"`,
+consecutive calls render as one parent row, which is the only click and hover target. Clicking that row
+expands the group into one full `full`-mode `ToolExecutionComponent` card per call, indented under the
+retained summary row; each card shows its arguments and output without duplicating that component's
+rendering. Clicking the parent row again collapses the group to its one summary row. The cards are
+inert: a click on a card row resolves nothing. The parent is clickable whether or not a call has
+settled. Keyboard expansion (`ctrl+o`) still expands cards session-wide; only a click-created expansion
+keeps an otherwise final block mutable. Text selection must survive (`tui.mouse` puts native selection
+on shift+drag). Hovering marks every physical segment of the wrapped
+parent row — a band plus an underline, so the mark reads as a link rather than a selection — and nothing
+else. This expanded-group shape (retained parent summary, indented inert full cards, parent-only
+click-to-toggle) is this fork's own contract, not sourced from Claude Code: upstream's documentation
+confirms click-to-expand only at the single collapsed-row level (evidence below) and does not publish
+how it lays out an expanded multi-call group or styles hover, so this fork decided that shape directly
+rather than infer it from an undocumented surface.
 
 **C8. Truncation is bounded and never mid-escape.** A primary argument is cut to a fixed budget with a
 single ellipsis; the cut must not split an escape sequence or a multi-byte character.
 
-**C9. The affordance is readable without hovering.** Every row states in its own leading column what a
-click on it does: `▸` opens (a collapsed group, or a call whose card is closed) and `▾` closes what is
-open. The subordinate rows of an expanded group, and an open call's card, are indented under
-the summary so nesting is visible in a still screenshot; an open call keeps its own header row above
-its card, so the row that closes it again is always on screen. Hover marking (C7) is an addition to
-this, never the only signal: a static transcript, a screenshot, and a scrollback copy all still say
-which rows are interactive and which of them are open.
+**C9. The affordance is readable without hovering.** The parent row states in its leading column what a
+click on it does: `▸` opens the collapsed group and `▾` closes the open group. The cards are indented
+beneath the retained summary so nesting reads in a still screenshot, and card rows carry no marker
+because they are not targets. Hover marking (C7) is an addition to this, never the only signal: a
+static transcript, a screenshot, and a scrollback copy still distinguish a closed parent from an open
+parent and show the cards nested beneath it.
 
 **C10. A collapsed group is red only when nothing in it worked.** The summary row carries the status
 of the run, not of its worst call: pending while any call is in flight, otherwise successful if any
@@ -207,18 +203,27 @@ keybinding (`app.mouse.toggle`, default `alt+s`) therefore releases capture and 
 the release wins over `tui.mouse`. Proof is the pty byte stream: the terminal must see
 `\x1b[?1003l\x1b[?1000l` on release and `\x1b[?1000h\x1b[?1003h` on retake.
 
-**C12. Restored rows keep their interactivity; native scrollback does not.** A compact
-tool-group row that is already in normal-buffer history — visible after a `--resume` because
-the application replays the restored transcript into normal-buffer history — stays a
-hover-and-click target for as long as it is physically on screen: hovering it underlines and backgrounds the full terminal-width row. The
-underlying native scrollback is immutable, so a click does not edit it in place; instead it
-raises a mutable copy of that semantic row at the live transcript bottom, rendered from the
-same emitted presentation the row carried when it first printed. A target that leaves the
-physical ledger — scrolled off the visible area or superseded — fails closed and is no longer
-clickable. Proof, live pty run 2026-09-14: after `--resume`, a compact tool-group row already
-in normal-buffer history was targetable while physically visible; hover underlined and
-backgrounded the full-width row; a click raised the mutable copy at the live bottom using the
-row's own emitted presentation even after `ctrl+o` had changed the current component state.
+**C12. Interaction is live-viewport only.** A compact tool-group row committed to normal-buffer history
+is inert: it has no hover mark and no click action. Committed scrollback cannot be repainted — Warp in
+particular never shows a hover mark there — and the former behaviour of raising a mutable copy at the
+live bottom produced a visible duplicate of the group. A committed row therefore stays exactly as
+printed; only rows still in the live mutable viewport respond.
+
+Evidence, live pty run 2026-09-15 against the freshly built binary
+(`scripts/.pty-parent-toggle-probe.ts`, 150x45): the collapsed parent row was
+`▸ • 3 shell commands`; hover painted all 150 columns of that row; the parent click expanded cards
+showing `$ echo toggle-command-one` and its `toggle-command-one` output; a click on a card row left
+the screen byte-identical and logged
+`{"message":"tool row click","row":4,"resolved":false,"acted":false}`; the second parent click
+restored the one-line summary; after the group scrolled out of the live viewport, the summary-row count
+never grew past one. `scripts/.pty-mouse-toggle-probe.ts` reports 5/5 for C11.
+
+**C13. Observability records interaction transitions.** `logger.debug` emits `tool row click` with
+`row`, `resolved`, and `acted` once per click; `tool row toggle` with `calls` and `expanded` once per
+toggle; `mouse capture` with `capture` and `suspended` once per capture transition; and the `tool row
+interaction` aggregate at most every 30s only when a counter advanced, plus once on teardown. Motion is
+counted, never logged per event. Its counters distinguish `the terminal sends no motion` from `no row
+resolved`.
 
 ### Evidence for this contract
 
@@ -257,21 +262,18 @@ row's own emitted presentation even after `ctrl+o` had changed the current compo
   "Click to expand collapsed tool results" — the direct precedent for C7. The Bash row's own template
   and any `ctrl+o`/`ctrl+r` keybinding strings sit in compressed regions of that binary and were not
   recoverable, so C1's Bash form rests on the captured sessions above, not on the bundle.
-- **2026-09-13, this fork's own decision, not Claude Code evidence** — the two-level expanded-group
-  layout (retained summary, dimmed per-call lines) and the per-call click-to-open-a-full-card
-  interaction are authored directly for this repository. Upstream evidence only reaches "a row with
-  more to show is clickable" (the classic-TUI help line above) and never documents the expanded
-  group's internal layout or a hover style, so nothing here overrides or contradicts a sourced claim —
-  it fills a gap upstream leaves undocumented. Implemented in
-  `packages/coding-agent/src/modes/components/tool-call-compact.ts` (`CompactToolCallComponent`) and
-  `packages/coding-agent/src/modes/composer.ts` (row-local hover/click routing through
-  `getClickFocusAgentIds`/`getViewportClickAction`).
-- **2026-09-14, this fork's own local proof, not Claude Code evidence** — after `--resume`, a
-  compact tool-group row already in normal-buffer history stayed a click target while physically
-  visible: hover marked the full terminal-width row, and a click raised a mutable copy of it at
-  the live transcript bottom using the row's emitted presentation, even after `ctrl+o` had
-  changed current component state. That is
-  C12; the native scrollback itself was never edited in place.
+- **2026-09-13, this fork's own decision, not Claude Code evidence** — this fork originally chose the
+  two-level expanded-group layout (retained summary, dimmed per-call lines) and per-call
+  click-to-open-a-full-card interaction directly for this repository. That layout decision is
+  superseded by the 2026-09-15 rework in C7: the retained parent summary is the only target, and
+  expansion shows indented inert full cards, one per call. Upstream evidence only reaches "a row with
+  more to show is clickable" (the classic-TUI help line above) and never documents the expanded group's
+  internal layout or a hover style, so this fork's decision fills a gap upstream leaves undocumented.
+- **2026-09-14, this fork's own local proof, not Claude Code evidence** — the original `--resume`
+  proof reported that a compact tool-group row in normal-buffer history was targetable while physically
+  visible and that a click raised a mutable copy at the live transcript bottom. That proof is
+  superseded by the 2026-09-15 inert-history decision in C12: committed rows remain exactly as printed
+  and are not interactive.
 
 ## Build notes, from the retired `tools/omp-local/` build
 
