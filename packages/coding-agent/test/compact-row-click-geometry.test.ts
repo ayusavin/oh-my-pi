@@ -311,4 +311,110 @@ describe("compact row click geometry", () => {
 		term.sendInput(`\x1b[<0;1;${continuationRow + 1}M`);
 		await term.waitForRender(() => plainRows(term.getViewport()).some(row => row.includes("wrapped out one")));
 	});
+
+	it("keeps a live grouped parent clickable above an expanded logs result", async () => {
+		await mode.init({ suppressWelcomeIntro: true });
+		void mode.getUserInput();
+		await term.waitForRender();
+
+		const earlyLine = "EARLY_CHILD_SCREEN_LINE";
+		const tailLine = "LATE_CHILD_SCREEN_LINE";
+		const terminalRows = Array.from({ length: 80 }, (_, index) =>
+			index === 0 ? earlyLine : index === 79 ? tailLine : `CHILD_SCREEN_LINE_${index.toString().padStart(2, "0")}`,
+		);
+		const group = new CompactToolCallComponent();
+		group.addCall("hub-logs-short", "hub", "Hub", { op: "logs", name: "child-screen" }, undefined);
+		group.addCall("hub-logs-tall", "hub", "Hub", { op: "logs", name: "child-screen" }, undefined);
+		group.updateResult(
+			{
+				content: [{ type: "text", text: "SHORT_CHILD_SCREEN_LINE" }],
+				details: {
+					op: "logs",
+					state: "exited",
+					cursor: 1,
+					terminalRows: ["SHORT_CHILD_SCREEN_LINE"],
+				},
+				isError: false,
+			},
+			false,
+			"hub-logs-short",
+		);
+		group.updateResult(
+			{
+				content: [{ type: "text", text: terminalRows.join("\n") }],
+				details: { op: "logs", state: "exited", cursor: terminalRows.length, terminalRows },
+				isError: false,
+			},
+			false,
+			"hub-logs-tall",
+		);
+		mode.chatContainer.addChild(group);
+		mode.ui.requestRender();
+		await term.waitForRender(() => plainRows(term.getViewport()).some(row => row.includes("2 hub calls")));
+
+		const parentRow = plainRows(term.getViewport()).findIndex(row => row.includes("2 hub calls"));
+		expect(parentRow).toBeGreaterThanOrEqual(0);
+		term.sendInput(`\x1b[<0;1;${parentRow + 1}M`);
+		await term.waitForRender(() => {
+			const rows = plainRows(term.getViewport());
+			return (
+				rows.some(row => row.includes("2 hub calls")) &&
+				rows.some(row => row.includes(tailLine)) &&
+				!rows.some(row => row.includes(earlyLine))
+			);
+		});
+
+		const expandedRows = plainRows(term.getViewport());
+		expect(expandedRows.some(row => row.includes("2 hub calls"))).toBe(true);
+		expect(expandedRows.some(row => row.includes(tailLine))).toBe(true);
+		expect(expandedRows.some(row => row.includes(earlyLine))).toBe(false);
+		const expandedParentRow = expandedRows.findIndex(row => row.includes("2 hub calls"));
+		expect(expandedParentRow).toBeGreaterThanOrEqual(0);
+		term.sendInput(`\x1b[<0;1;${expandedParentRow + 1}M`);
+		await term.waitForRender(() => {
+			const rows = plainRows(term.getViewport());
+			return (
+				rows.filter(row => row.includes("2 hub calls")).length === 1 &&
+				!rows.some(row => row.includes(tailLine)) &&
+				!rows.some(row => row.includes("detail rows omitted"))
+			);
+		});
+
+		const collapsedRows = plainRows(term.getViewport());
+		expect(collapsedRows.filter(row => row.includes("2 hub calls"))).toHaveLength(1);
+		expect(collapsedRows.some(row => row.includes(tailLine))).toBe(false);
+		expect(collapsedRows.some(row => row.includes("detail rows omitted"))).toBe(false);
+	});
+
+	it("reports exact omitted detail rows within its allocation", () => {
+		const group = new CompactToolCallComponent();
+		const terminalRows = Array.from({ length: 8 }, (_, index) => `DETAIL_ROW_${index}`);
+		group.addCall("hub-logs-one", "hub", "Hub", { op: "logs", name: "child-screen" }, undefined);
+		group.addCall("hub-logs-two", "hub", "Hub", { op: "logs", name: "child-screen" }, undefined);
+		for (const toolCallId of ["hub-logs-one", "hub-logs-two"]) {
+			group.updateResult(
+				{
+					content: [{ type: "text", text: terminalRows.join("\n") }],
+					details: { op: "logs", state: "exited", cursor: terminalRows.length, terminalRows },
+					isError: false,
+				},
+				false,
+				toolCallId,
+			);
+		}
+
+		const collapsedParentRows = plainRows(group.render(120));
+		group.setExpanded(true);
+		const fullRows = plainRows(group.render(120));
+		const parentRowCount = collapsedParentRows.length;
+		const detailRows = fullRows.slice(parentRowCount);
+		const allocation = parentRowCount + 3;
+		group.setTranscriptAllocation(allocation, { tick: 0, now: 0 });
+		const clippedRows = plainRows(group.render(120));
+
+		expect(clippedRows.length).toBeLessThanOrEqual(allocation);
+		expect(clippedRows.slice(0, parentRowCount)).toEqual(fullRows.slice(0, parentRowCount));
+		expect(clippedRows[parentRowCount]).toContain(`… ${detailRows.length - 2} detail rows omitted`);
+		expect(clippedRows.slice(parentRowCount + 1)).toEqual(detailRows.slice(-2));
+	});
 });

@@ -23,6 +23,11 @@ class Block implements Component {
 		this.#finalized = true;
 	}
 
+	reopen(rows: string[]): void {
+		this.#rows = rows;
+		this.#finalized = false;
+	}
+
 	isTranscriptBlockFinalized(): boolean {
 		return this.#finalized;
 	}
@@ -59,6 +64,28 @@ class AppendGroupWrapper extends Container {
 /** A live block the container recognizes as dynamic tool-activity. */
 class ToolBlock extends Block {
 	setToolActivityVisible(): void {}
+}
+
+class EmergencyBlock extends Block {
+	#allocation = Number.MAX_SAFE_INTEGER;
+	emergencyRenderAllocations: number[] = [];
+
+	constructor(
+		rows: string[],
+		private readonly emergencyRow: string,
+	) {
+		super(rows, true);
+	}
+
+	override setTranscriptAllocation(rows: number): void {
+		super.setTranscriptAllocation(rows);
+		this.#allocation = rows;
+	}
+
+	renderTranscriptBlockEmergencyRow(_width: number): string {
+		this.emergencyRenderAllocations.push(this.#allocation);
+		return this.emergencyRow;
+	}
 }
 
 function literalStableRow(row: string): TranscriptStableRow {
@@ -425,16 +452,17 @@ describe("TranscriptContainer", () => {
 		expect(transcript.renderViewport(80, 1, frame)).toEqual(["fresh live"]);
 	});
 
-	it("assigns one row per live block until pressure requires aggregation", () => {
+	it("keeps a newest row and count-bearing backlog at capacities one and two", () => {
 		const transcript = new TranscriptContainer();
 		transcript.addChild(new Block(["first"], false));
-		transcript.addChild(new Block(["second"], false));
+		transcript.addChild(new Block(["newest one", "newest two"], false));
 
-		expect(transcript.renderViewport(80, 2, frame)).toEqual(["first", "second"]);
+		expect(transcript.renderViewport(80, 1, frame)).toEqual(["newest two"]);
 		expect(transcript.canAdmit(2)).toBe(false);
-		expect(transcript.renderViewport(80, 1, frame)).toEqual(["1 more transcript blocks active"]);
+		expect(transcript.renderViewport(80, 2, frame)).toEqual(["1 more transcript blocks", "newest two"]);
 	});
-	it("does not report settled resume backlog as active", () => {
+
+	it("keeps the newest current row at capacity one despite settled entries", () => {
 		const transcript = new TranscriptContainer();
 		transcript.addChild(new Block(["settled one"], true));
 		transcript.addChild(new Block(["settled two"], true));
@@ -444,7 +472,54 @@ describe("TranscriptContainer", () => {
 		// settled transcript prefix live for one frame while it drains next.
 		expect(transcript.renderViewport(80, 1, frame)).toEqual(["current tool"]);
 	});
-	it("excludes empty blocks so pressure never emits blank rows (issue 9483)", () => {
+
+	it("sets zero allocation on every uncommitted block at zero capacity", () => {
+		const transcript = new TranscriptContainer();
+		const settled = new Block(["settled"], true);
+		const active = new Block(["active"], false);
+		transcript.addChild(settled);
+		transcript.addChild(active);
+
+		expect(transcript.renderViewport(80, 0, frame)).toEqual([]);
+		expect(settled.allocations).toEqual([0]);
+		expect(active.allocations).toEqual([0]);
+	});
+
+	it("keeps the newest row when a hidden emergency candidate has one visible slot", () => {
+		for (const capacity of [2, 3, 4]) {
+			const transcript = new TranscriptContainer();
+			const emergency = new EmergencyBlock(["settled detail"], "settled summary");
+			const middle = new Block(["middle"], false);
+			const newest = new Block(["newest"], false);
+			transcript.addChild(emergency);
+			transcript.addChild(middle);
+			transcript.addChild(newest);
+
+			const rows = transcript.renderViewport(80, capacity, frame);
+			expect(rows).toEqual(
+				capacity === 2 ? ["2 more transcript blocks", "newest"] : ["2 more transcript blocks", "", "newest"],
+			);
+			expect(rows.length).toBeLessThanOrEqual(capacity);
+			expect(transcript.getLastViewportSpans()).toEqual([
+				{ component: newest, start: capacity === 2 ? 1 : 2, end: capacity === 2 ? 2 : 3, offset: 0 },
+			]);
+			expect(emergency.emergencyRenderAllocations).toEqual([]);
+			expect(emergency.allocations.at(-1)).toBe(0);
+			expect(middle.allocations.at(-1)).toBe(0);
+			expect(newest.allocations.at(-1)).toBe(1);
+		}
+	});
+
+	it("counts hidden settled and active blocks in the backlog", () => {
+		const transcript = new TranscriptContainer();
+		transcript.addChild(new Block(["settled"], true));
+		transcript.addChild(new Block(["active"], false));
+		transcript.addChild(new Block(["current one", "current two"], false));
+
+		expect(transcript.renderViewport(80, 3, frame)).toEqual(["2 more transcript blocks", "", "current two"]);
+	});
+
+	it("ignores empty blocks while preserving boundaries under pressure (issue 9483)", () => {
 		const transcript = new TranscriptContainer();
 		// Text blocks interleaved with empty (hidden tool-activity) blocks that
 		// render nothing but stay live until retired.
@@ -452,27 +527,44 @@ describe("TranscriptContainer", () => {
 			transcript.addChild(new Block([`t${i}a`, `t${i}b`, `t${i}c`], true));
 			for (let j = 0; j < 8; j++) transcript.addChild(new Block([], true));
 		}
-		// Emergency path: more non-empty blocks than rows. Every row carries real
-		// text — no block's tail is dropped as blank padding.
-		const out = transcript.renderViewport(80, 12, frame);
-		expect(out).toHaveLength(12);
-		expect(out.every(row => /\S/.test(row))).toBe(true);
+		expect(transcript.renderViewport(80, 12, frame)).toEqual([
+			"t0c",
+			"",
+			"t1c",
+			"",
+			"t2c",
+			"",
+			"t3c",
+			"",
+			"t4c",
+			"",
+			"t5b",
+			"t5c",
+		]);
 	});
 
-	it("empty blocks do not reserve capacity from real text under pressure (issue 9483)", () => {
+	it("does not reserve empty blocks while allocating separated text (issue 9483)", () => {
 		const transcript = new TranscriptContainer();
 		transcript.addChild(new Block(["A1", "A2", "A3", "A4"], true));
 		transcript.addChild(new Block([], true));
 		transcript.addChild(new Block(["B1", "B2", "B3", "B4"], true));
 		transcript.addChild(new Block([], true));
 		transcript.addChild(new Block(["C1", "C2", "C3", "C4"], true));
-		// Capacity 10 fits all real content once the two empty blocks stop
-		// stealing a base row each; the older block keeps its tail rows.
-		const out = transcript.renderViewport(80, 10, frame);
-		expect(out).toEqual(["A3", "A4", "B1", "B2", "B3", "B4", "C1", "C2", "C3", "C4"]);
+		expect(transcript.renderViewport(80, 10, frame)).toEqual([
+			"A4",
+			"",
+			"B2",
+			"B3",
+			"B4",
+			"",
+			"C1",
+			"C2",
+			"C3",
+			"C4",
+		]);
 	});
 
-	it("keeps a completed assistant answer visible behind an active prefix", () => {
+	it("keeps a completed assistant answer represented under backlog pressure", () => {
 		const transcript = new TranscriptContainer();
 		transcript.addChild(new Block(["stale active"], false));
 		transcript.addChild(new AssistantMessageComponent(finalAnswer));
@@ -480,10 +572,20 @@ describe("TranscriptContainer", () => {
 		transcript.addChild(new Block(["task running"], false));
 
 		expect(transcript.peekFinalizedBatch(80, 3)).toBeUndefined();
-		const rows = transcript.renderViewport(80, 3, frame);
-		expect(rows[0]).toBe("2 more transcript blocks active");
-		expect(Bun.stripANSI(rows[1] ?? "").trim()).toBe("Implemented");
-		expect(rows[2]).toBe("task running");
+		const rows = transcript.renderViewport(80, 5, frame);
+		expect(rows[0]).toBe("2 more transcript blocks");
+		expect(rows[1]).toBe("");
+		expect(Bun.stripANSI(rows[2] ?? "").trim()).toBe("Implemented");
+		expect(rows[3]).toBe("");
+		expect(rows[4]).toBe("task running");
+	});
+
+	it("keeps blank boundaries in ordinary multiline overflow", () => {
+		const transcript = new TranscriptContainer();
+		transcript.addChild(new Block(["A1", "A2", "A3"], false));
+		transcript.addChild(new Block(["B1", "B2", "B3"], false));
+
+		expect(transcript.renderViewport(80, 5, frame)).toEqual(["A3", "", "B1", "B2", "B3"]);
 	});
 
 	it("gives surplus rows to assistant text before a growing tool card (issue 9718)", () => {
@@ -492,13 +594,59 @@ describe("TranscriptContainer", () => {
 		const tool = new ToolBlock(["T1", "T2", "T3", "T4"], false);
 		transcript.addChild(assistant);
 		transcript.addChild(tool);
-		// Capacity 5 cannot fit both blocks in full. Surplus (3 rows) goes to the
-		// assistant block first; the tool card collapses to its one-row minimum
-		// instead of clipping already-visible assistant text.
+		// The separator leaves four content rows. Surplus goes to the assistant
+		// block first, leaving the tool card at its one-row minimum.
 		const out = transcript.renderViewport(80, 5, frame);
-		expect(out).toEqual(["A1", "A2", "A3", "A4", "T4"]);
-		expect(assistant.allocations.at(-1)).toBe(4);
+		expect(out).toEqual(["A2", "A3", "A4", "", "T4"]);
+		expect(assistant.allocations.at(-1)).toBe(3);
 		expect(tool.allocations.at(-1)).toBe(1);
+	});
+
+	it("keeps a reopened settled block live under pressure", () => {
+		const transcript = new TranscriptContainer();
+		const expandable = new Block(["parent row", "expanded detail"], true);
+		const live = new Block(["live row"], false);
+		transcript.addChild(expandable);
+		transcript.addChild(live);
+
+		transcript.renderViewport(80, 3, frame);
+		expect(transcript.blockStates()).toEqual(["settled", "active"]);
+
+		expandable.reopen(["parent row", "expanded detail"]);
+
+		expect(transcript.peekFinalizedBatch(80, 1)).toBeUndefined();
+		expect(transcript.renderViewport(80, 2, frame)).toEqual(["1 more transcript blocks", "live row"]);
+		expect(live.allocations.at(-1)).toBe(1);
+	});
+
+	it("preserves a hidden settled emergency row in chronological order", () => {
+		const transcript = new TranscriptContainer();
+		const settled = new EmergencyBlock(["settled detail"], "settled summary");
+		const middle = new Block(["middle"], false);
+		const later = new Block(["later"], false);
+		const current = new Block(["current"], false);
+		transcript.addChild(settled);
+		transcript.addChild(middle);
+		transcript.addChild(later);
+		transcript.addChild(current);
+
+		expect(transcript.renderViewport(80, 1, frame)).toEqual(["current"]);
+
+		expect(transcript.renderViewport(80, 5, frame)).toEqual([
+			"2 more transcript blocks",
+			"",
+			"settled summary",
+			"",
+			"current",
+		]);
+		expect(transcript.getLastViewportSpans()).toEqual([
+			{ component: settled, start: 2, end: 3, offset: 0 },
+			{ component: current, start: 4, end: 5, offset: 0 },
+		]);
+		expect(settled.emergencyRenderAllocations.at(-1)).toBe(1);
+		expect(middle.allocations.at(-1)).toBe(0);
+		expect(later.allocations.at(-1)).toBe(0);
+		expect(current.allocations.at(-1)).toBe(1);
 	});
 
 	it("permits removing settled blocks until they are offered or committed", () => {
@@ -531,6 +679,20 @@ describe("TranscriptContainer", () => {
 
 		expect(transcript.isBlockEmitted(fresh)).toBe(false);
 		expect(transcript.isBlockEmitted(new Block(["unknown"], false))).toBe(false);
+	});
+
+	it("reports offered append rows as emitted before acknowledgment", () => {
+		const transcript = new TranscriptContainer();
+		const block = new AppendBlock(["stable", "partial"], ["stable"]);
+		transcript.addChild(block);
+
+		expect(transcript.isBlockEmitted(block)).toBe(false);
+		const offered = transcript.peekFinalizedBatch(80, 0);
+		expect(offered?.kind).toBe("append");
+		expect(offered?.rows).toEqual(["stable"]);
+		expect(transcript.isBlockEmitted(block)).toBe(true);
+		transcript.acknowledgeFinalizedBatch(offered!.id);
+		expect(transcript.isBlockEmitted(block)).toBe(true);
 	});
 
 	it("reports blocks with emitted stable rows", () => {
@@ -647,30 +809,29 @@ describe("TranscriptContainer viewport click spans", () => {
 		]);
 	});
 
-	it("maps allocation-clipped rows to their surviving tails", () => {
+	it("maps allocation-clipped rows to their surviving tails across a boundary", () => {
 		const transcript = new TranscriptContainer();
 		const first = new Block(["a1", "a2", "a3", "a4"], false);
 		const second = new Block(["b1", "b2", "b3", "b4"], false);
 		transcript.addChild(first);
 		transcript.addChild(second);
 
-		expect(transcript.renderViewport(80, 5, frame)).toEqual(["a4", "b1", "b2", "b3", "b4"]);
-		// `first` shows only its own row 3, so a hit on that row must address
-		// row 3 of the component, not row 0.
+		expect(transcript.renderViewport(80, 5, frame)).toEqual(["a4", "", "b2", "b3", "b4"]);
 		expect(transcript.getLastViewportSpans()).toEqual([
 			{ component: first, start: 0, end: 1, offset: 3 },
-			{ component: second, start: 1, end: 5, offset: 0 },
+			{ component: second, start: 2, end: 5, offset: 1 },
 		]);
 	});
 
-	it("leaves the emergency summary row unmapped", () => {
+	it("leaves backlog and separator rows unmapped", () => {
 		const transcript = new TranscriptContainer();
-		transcript.addChild(new Block(["a1"], false));
-		transcript.addChild(new Block(["b1"], false));
-		transcript.addChild(new Block(["c1"], false));
+		transcript.addChild(new Block(["settled"], true));
+		transcript.addChild(new Block(["active"], false));
+		const current = new Block(["current one", "current two"], false);
+		transcript.addChild(current);
 
-		expect(transcript.renderViewport(80, 1, frame)).toEqual(["2 more transcript blocks active"]);
-		expect(transcript.getLastViewportSpans()).toEqual([]);
+		expect(transcript.renderViewport(80, 3, frame)).toEqual(["2 more transcript blocks", "", "current two"]);
+		expect(transcript.getLastViewportSpans()).toEqual([{ component: current, start: 2, end: 3, offset: 1 }]);
 	});
 
 	it("clears spans when the tail is empty or cleared", () => {

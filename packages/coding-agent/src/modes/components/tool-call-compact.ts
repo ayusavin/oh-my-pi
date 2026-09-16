@@ -29,6 +29,7 @@ import { TRUNCATE_LENGTHS, type ToolUIStatus } from "../../tools/render-utils";
 import { type ToolActivitySummary, toolRenderers } from "../../tools/renderers";
 import { Ellipsis, renderStatusLine, truncateToWidth } from "../../tui";
 import { type ToolExecutionHandle, ToolExecutionComponent, type ToolExecutionUi } from "./tool-execution";
+import type { AnimationFrame, TranscriptPresentationTarget } from "./transcript-container";
 
 type CallOutcome = "pending" | "success" | "error";
 
@@ -287,11 +288,15 @@ export function resolveCompactToolCallHistoryTarget(target: object): CompactTool
  * the group to new entries without forcing a still-pending entry done;
  * `seal()` forces it done regardless.
  */
-export class CompactToolCallComponent extends Container implements ToolExecutionHandle, HistoryRowTargetProvider {
+export class CompactToolCallComponent
+	extends Container
+	implements ToolExecutionHandle, HistoryRowTargetProvider, TranscriptPresentationTarget
+{
 	#entries = new Map<string, CompactCallEntry>();
 	/** Number of width-aware physical segments occupied by the parent row in
 	 * the latest live render. */
 	#lastParentRowCount = 0;
+	#allocation = Number.MAX_SAFE_INTEGER;
 	#parentText: Text;
 	#parentRow = "";
 	/** Cards exist only while the effective parent state is expanded. */
@@ -391,6 +396,11 @@ export class CompactToolCallComponent extends Container implements ToolExecution
 		this.#updateDisplay();
 	}
 
+	/** Apply the transcript allocator's current viewport reservation. */
+	setTranscriptAllocation(rows: number, _frame: AnimationFrame): void {
+		this.#allocation = Math.max(0, Math.trunc(rows));
+	}
+
 	/** Toggle the parent relative to its currently visible state. */
 	toggleExpanded(fullRepaintRequested = false): void {
 		const expanded = !this.#effectiveExpanded();
@@ -451,23 +461,36 @@ export class CompactToolCallComponent extends Container implements ToolExecution
 	}
 
 	override render(width: number): readonly string[] {
-		if (!this.#toolActivityVisible) {
+		if (!this.#toolActivityVisible || this.#allocation === 0) {
 			this.#lastParentRowCount = 0;
 			return [];
 		}
 		const parentLines = this.#parentText.render(width);
-		this.#lastParentRowCount = parentLines.length;
+		const parentRows = Math.min(parentLines.length, this.#allocation);
+		this.#lastParentRowCount = parentRows;
+		if (parentRows < parentLines.length) return parentLines.slice(0, parentRows);
+		if (!this.#effectiveExpanded()) return parentLines;
+
 		const cardLines: string[] = [];
-		if (this.#effectiveExpanded()) {
-			for (const entry of this.#entries.values()) {
-				const card = this.#cards.get(entry.toolCallId);
-				if (!card) continue;
-				for (const line of card.render(Math.max(1, width - NEST_INDENT.length))) {
-					cardLines.push(`${NEST_INDENT}${line}`);
-				}
+		for (const entry of this.#entries.values()) {
+			const card = this.#cards.get(entry.toolCallId);
+			if (!card) continue;
+			for (const line of card.render(Math.max(1, width - NEST_INDENT.length))) {
+				cardLines.push(`${NEST_INDENT}${line}`);
 			}
 		}
-		return [...parentLines, ...cardLines];
+		const output = [...parentLines, ...cardLines];
+		if (output.length <= this.#allocation) return output;
+
+		const detailRows = this.#allocation - parentLines.length;
+		if (detailRows === 0) return parentLines;
+		const visibleDetails = Math.max(0, detailRows - 1);
+		const omittedDetails = cardLines.length - visibleDetails;
+		const indicator = truncateToWidth(
+			`${NEST_INDENT}${theme.fg("dim", `… ${omittedDetails} detail row${omittedDetails === 1 ? "" : "s"} omitted`)}`,
+			Math.max(0, width),
+		);
+		return [...parentLines, indicator, ...cardLines.slice(cardLines.length - visibleDetails)];
 	}
 
 	/** Calls never park as background tasks; the handle method is a no-op. */
