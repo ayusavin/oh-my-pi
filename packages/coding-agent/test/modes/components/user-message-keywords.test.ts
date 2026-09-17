@@ -189,3 +189,81 @@ describe("UserMessageComponent magic-keyword highlighting", () => {
 		expect(raw).toContain(imageUri);
 	});
 });
+
+describe("UserMessageComponent transcript allocation", () => {
+	it("returns no rows for allocation 0", () => {
+		const component = new UserMessageComponent("visible message");
+		component.setTranscriptAllocation(0, { tick: 0, now: 0 });
+
+		expect(component.render(80)).toEqual([]);
+	});
+
+	it("renders visible text for allocation 1", () => {
+		const component = new UserMessageComponent("visible message");
+		component.setTranscriptAllocation(1, { tick: 0, now: 0 });
+
+		const rows = component.render(80);
+		expect(rows).toHaveLength(1);
+		expect(Bun.stripANSI(rows[0])).toContain("visible message");
+	});
+
+	it("renders semantic text before spare padding for allocation 2", () => {
+		const component = new UserMessageComponent("visible message");
+		component.setTranscriptAllocation(2, { tick: 0, now: 0 });
+
+		const rows = component.render(80).map(row => Bun.stripANSI(row));
+		expect(rows).toHaveLength(2);
+		expect(rows[0]).toContain("visible message");
+		expect(rows[1]?.trim()).toBe("");
+	});
+
+	it("keeps multiline content at its head for allocation 2", () => {
+		const component = new UserMessageComponent("first message row\nsecond message row\nthird message row");
+		component.setTranscriptAllocation(2, { tick: 0, now: 0 });
+
+		const rows = component.render(80).map(row => Bun.stripANSI(row));
+		expect(rows).toHaveLength(2);
+		expect(rows[0]).toContain("first message row");
+		expect(rows[1]).toContain("second message row");
+		expect(rows.join("\n")).not.toContain("third message row");
+	});
+
+	it("balances OSC 133 markers within a single allocated row", () => {
+		const component = new UserMessageComponent("single visible row");
+		component.setTranscriptAllocation(1, { tick: 0, now: 0 });
+
+		const rows = component.render(80);
+		expect(rows).toHaveLength(1);
+		expect(countOccurrences(rows[0], "\x1b]133;A\x07")).toBe(1);
+		expect(countOccurrences(rows[0], "\x1b]133;B\x07")).toBe(1);
+		expect(countOccurrences(rows[0], "\x1b]133;C\x07")).toBe(1);
+		expect(countOccurrences(rows[0], "\x1b]133;D;0\x07")).toBe(1);
+	});
+
+	it("does not let a reaction replace the sole visible text row", () => {
+		const component = new UserMessageComponent("visible message");
+		component.setReaction("👍");
+		component.setTranscriptAllocation(1, { tick: 0, now: 0 });
+
+		const raw = component.render(80).join("\n");
+		expect(Bun.stripANSI(raw)).toContain("visible message");
+		expect(raw).not.toContain("👍");
+	});
+
+	it("leaves unlimited rendering byte-for-byte unchanged with vertical padding", () => {
+		const baseline = new UserMessageComponent("visible message");
+		baseline.setReaction("👍");
+		const expected = baseline.render(80);
+
+		const allocated = new UserMessageComponent("visible message");
+		allocated.setReaction("👍");
+		allocated.setTranscriptAllocation(1, { tick: 0, now: 0 });
+		allocated.render(80);
+		allocated.setTranscriptAllocation(Number.POSITIVE_INFINITY, { tick: 1, now: 1 });
+		const actual = allocated.render(80);
+
+		expect(actual).toEqual(expected);
+		expect(Bun.stripANSI(actual[0])).toContain("👍");
+		expect(Bun.stripANSI(actual.at(-1)!).trim()).toBe("");
+	});
+});

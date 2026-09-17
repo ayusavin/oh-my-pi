@@ -6,6 +6,7 @@ import { fileHyperlink } from "../../tui";
 import { imageReferenceHyperlink } from "../image-references";
 import { highlightMagicKeywords } from "../magic-keywords";
 import type { ReactionTarget } from "./reaction";
+import type { AnimationFrame, TranscriptPresentationTarget } from "./transcript-container";
 
 // OSC 133 shell integration: marks prompt zones for terminal multiplexers.
 //
@@ -83,7 +84,7 @@ export function userBubbleColor(options: UserBubbleOptions = {}): (value: string
  * Component that renders a user message. Accepts an agent reaction badge
  * (see {@link ReactionTarget}) drawn right-aligned in the bubble's top padding row.
  */
-export class UserMessageComponent extends Container implements ReactionTarget {
+export class UserMessageComponent extends Container implements ReactionTarget, TranscriptPresentationTarget {
 	// Memoized OSC 133 zone wrapping keyed on the underlying container render
 	// (same source ref ⇒ identical rows ⇒ reuse the wrapped copy). Keeps this
 	// component reference-stable for the transcript's incremental assembly and
@@ -92,6 +93,7 @@ export class UserMessageComponent extends Container implements ReactionTarget {
 	#zoneLines: string[] | undefined;
 	readonly #bgColor: (value: string) => string;
 	#reaction: string | undefined;
+	#allocation = Number.POSITIVE_INFINITY;
 
 	constructor(text: string, options: UserBubbleOptions = {}) {
 		super();
@@ -116,25 +118,51 @@ export class UserMessageComponent extends Container implements ReactionTarget {
 		this.#zoneLines = undefined;
 	}
 
+	/** Apply the transcript allocator's current viewport reservation. */
+	setTranscriptAllocation(rows: number, _frame: AnimationFrame): void {
+		const allocation = Number.isFinite(rows) ? Math.max(0, Math.trunc(rows)) : Number.POSITIVE_INFINITY;
+		if (this.#allocation === allocation) return;
+		this.#allocation = allocation;
+		this.#zoneLines = undefined;
+	}
+
 	/** The top padding row with the reaction badge right-aligned inside the horizontal padding. */
 	#reactionRow(width: number): string {
 		const emoji = this.#reaction!;
 		return applyBackgroundToLine(padding(width - 1 - visibleWidth(emoji)) + emoji, width, this.#bgColor);
 	}
 
+	/** Keep Markdown rows ahead of the bubble's vertical padding under transcript pressure. */
+	#allocatedLines(lines: readonly string[]): readonly string[] {
+		if (lines.length === 0 || this.#allocation === 0) return [];
+		if (!Number.isFinite(this.#allocation)) return lines;
+		const content = lines.slice(1, -1);
+		const visibleContent = content.slice(0, this.#allocation);
+		if (visibleContent.length < content.length) return visibleContent;
+
+		const remainingRows = this.#allocation - visibleContent.length;
+		if (remainingRows === 0) return visibleContent;
+
+		const allocated = [...visibleContent, lines[0]];
+		if (remainingRows > 1) allocated.push(lines[lines.length - 1]);
+		return allocated;
+	}
 	override render(width: number): readonly string[] {
-		const lines = super.render(width);
+		const source = super.render(width);
+		const lines = this.#allocatedLines(source);
 		if (lines.length === 0) {
 			return lines;
 		}
-		if (this.#zoneSource === lines && this.#zoneLines !== undefined) {
+		if (this.#zoneSource === source && this.#zoneLines !== undefined) {
 			return this.#zoneLines;
 		}
 		const wrapped = lines.slice();
-		if (this.#reaction !== undefined) wrapped[0] = this.#reactionRow(width);
+		if (this.#reaction !== undefined && lines[0] === source[0]) {
+			wrapped[0] = this.#reactionRow(width);
+		}
 		wrapped[0] = OSC133_ZONE_START + wrapped[0];
 		wrapped[wrapped.length - 1] = wrapped[wrapped.length - 1] + OSC133_ZONE_CLOSE;
-		this.#zoneSource = lines;
+		this.#zoneSource = source;
 		this.#zoneLines = wrapped;
 		return wrapped;
 	}
