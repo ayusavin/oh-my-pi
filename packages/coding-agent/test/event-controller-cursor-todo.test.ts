@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "bun:test";
-import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AssistantMessageComponent } from "@oh-my-pi/pi-coding-agent/modes/components/assistant-message";
+import { CompactToolCallComponent } from "@oh-my-pi/pi-coding-agent/modes/components/tool-call-compact";
 import { TranscriptContainer } from "@oh-my-pi/pi-coding-agent/modes/components/transcript-container";
 import { EventController } from "@oh-my-pi/pi-coding-agent/modes/controllers/event-controller";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
@@ -12,6 +13,7 @@ import { createInteractiveModeContext } from "./helpers/interactive-mode-context
 beforeAll(async () => {
 	resetSettingsForTest();
 	await Settings.init({ inMemory: true });
+	settings.set("display.toolCalls", "compact");
 	await initTheme();
 });
 
@@ -33,6 +35,7 @@ function createFixture() {
 }
 
 function expectRetirableResult(block: Component): void {
+	if (block instanceof CompactToolCallComponent) block.setExpanded(true);
 	const transcript = new TranscriptContainer();
 	transcript.addChild(block);
 	const batch = transcript.peekFinalizedBatch(80, 0);
@@ -166,7 +169,7 @@ describe("EventController + Cursor todo bridge", () => {
 		expect(f.ctx.setTodos).toHaveBeenCalledWith(phases);
 	});
 
-	it("settles a fast eval completion that outruns its streamed block", async () => {
+	it("shows a held completion through per-call expansion and clears pendingTools", async () => {
 		const f = createFixture();
 
 		await f.controller.handleEvent(evalEnd("eval-call-1"));
@@ -177,9 +180,24 @@ describe("EventController + Cursor todo bridge", () => {
 		expect(f.blocks).toHaveLength(1);
 		expect(f.ctx.pendingTools.size).toBe(0);
 		const block = f.blocks[0]!;
-		expect(block).toHaveProperty("isTranscriptBlockFinalized");
-		expect((block as AssistantMessageComponent).isTranscriptBlockFinalized()).toBe(true);
+		expect((block as CompactToolCallComponent).isTranscriptBlockFinalized()).toBe(true);
 		expectRetirableResult(block);
+	});
+
+	it("keeps one settled row when end, stream, then start arrive for the same id", async () => {
+		const f = createFixture();
+
+		await f.controller.handleEvent(evalEnd("eval-call-1"));
+		await f.controller.handleEvent(
+			streamedToolBlock("eval-call-1", "eval", { language: "py", code: "print('done')" }),
+		);
+		const block = f.blocks[0]!;
+		await f.controller.handleEvent(evalStart("eval-call-1"));
+
+		expect(f.blocks).toHaveLength(1);
+		expect(f.blocks[0]).toBe(block);
+		expect(f.ctx.pendingTools.size).toBe(0);
+		expect((block as CompactToolCallComponent).isTranscriptBlockFinalized()).toBe(true);
 	});
 
 	it("settles a held completion when execution start creates the card", async () => {
@@ -191,8 +209,7 @@ describe("EventController + Cursor todo bridge", () => {
 		expect(f.blocks).toHaveLength(1);
 		expect(f.ctx.pendingTools.size).toBe(0);
 		const block = f.blocks[0]!;
-		expect(block).toHaveProperty("isTranscriptBlockFinalized");
-		expect((block as AssistantMessageComponent).isTranscriptBlockFinalized()).toBe(true);
+		expect((block as CompactToolCallComponent).isTranscriptBlockFinalized()).toBe(true);
 		expectRetirableResult(block);
 	});
 
@@ -288,6 +305,7 @@ describe("EventController + Cursor todo bridge", () => {
 
 		expect(blocks).toHaveLength(1);
 		expect(ctx.pendingTools.size).toBe(0);
+		(blocks[0] as CompactToolCallComponent).setExpanded(true);
 		expect(Bun.stripANSI(blocks[0]!.render(120).join("\n"))).toContain("RESTORE_MATCH_LINE");
 		expect(showWarning).not.toHaveBeenCalled();
 	});
@@ -323,6 +341,7 @@ describe("EventController + Cursor todo bridge", () => {
 
 		expect(blocks).toHaveLength(1);
 		expect(ctx.pendingTools.size).toBe(0);
+		(blocks[0] as CompactToolCallComponent).setExpanded(true);
 		expect(Bun.stripANSI(blocks[0]!.render(120).join("\n"))).toContain("AGENT_START_MATCH");
 	});
 });

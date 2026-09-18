@@ -76,6 +76,7 @@ describe("EventController queues exclusive device writes until execution starts"
 	it("keeps the second exclusive xd:// write queued after message_end until its own start", async () => {
 		await Settings.init({ inMemory: true, cwd: process.cwd() });
 		settings.set("display.smoothStreaming", false);
+		settings.set("display.toolCalls", "full");
 
 		const searchArgs = { action: "grep_all", pattern: "Broken", scope: "game.StarterPlayer" };
 		const scriptsArgs = { action: "get_source", instancePath: "game.Workspace.Thumper" };

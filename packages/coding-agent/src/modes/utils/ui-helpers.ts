@@ -33,7 +33,7 @@ import {
 import { SkillMessageComponent } from "../../modes/components/skill-message";
 import { StrippedToolCallsPlaceholder } from "../../modes/components/stripped-tool-calls-placeholder";
 import { ToolActivityContainer } from "../../modes/components/tool-activity";
-import { compactToolCallMode, type CompactToolGroupHolder, mountCompactToolCall, resetCompactToolGroup } from "../../modes/components/tool-call-compact";
+import { compactToolCallMode, mountCompactToolCall } from "../../modes/components/tool-call-compact";
 import {
 	ToolExecutionComponent,
 	type ToolExecutionHandle,
@@ -65,7 +65,6 @@ import {
 	refreshAssistantMessageLinkTargets,
 } from "./interactive-context-helpers";
 import {
-	assistantHasScreenVisibleContent,
 	assistantHasVisibleContent,
 	assistantUsageIsBilled,
 	buildAsyncResultBlock,
@@ -399,12 +398,11 @@ export class UiHelpers {
 		}
 
 		let readGroup: ReadToolGroupComponent | null = null;
-		const toolGroup: CompactToolGroupHolder = { current: undefined };
 		const readToolCallArgs = new Map<string, Record<string, unknown>>();
 		const readToolCallAssistantComponents = new Map<string, AssistantMessageComponent>();
 		// Defer per-turn metrics until the turn's tool results have materialized.
-		// Read-only invisible turns attach the metrics to their shared compact
-		// group; every other turn keeps the standalone row below its tool blocks.
+		// Read-only invisible turns attach metrics to their full-mode read group;
+		// every other turn keeps the standalone row below its tool blocks.
 		let pendingUsage: Usage | undefined;
 		let pendingUsageDuration: number | undefined;
 		let pendingUsageTtft: number | undefined;
@@ -428,7 +426,6 @@ export class UiHelpers {
 			if (!usageAttached) {
 				readGroup?.seal();
 				readGroup = null;
-				resetCompactToolGroup(toolGroup, true);
 				this.ctx.chatContainer.addChild(
 					createUsageRowBlock(
 						pendingUsage,
@@ -523,14 +520,11 @@ export class UiHelpers {
 					assistantComponent.setServedModelMismatch(this.ctx.servedModelTracker.check(message));
 				}
 				if (assistantHasVisibleContent(message)) {
-					// Rebuild reconstructs immutable history; seal (not finalize) because
-					// a pending entry otherwise keeps the group active indefinitely.
+					// Visible content closes the full-mode read run.
 					readGroup?.seal();
 					readGroup = null;
 				}
-				if (assistantHasScreenVisibleContent(message, this.ctx.effectiveHideThinkingBlock)) {
-					resetCompactToolGroup(toolGroup, true);
-				}
+
 				const errorPresentation = resolveAssistantErrorPresentation(message, this.ctx.viewSession.retryAttempt);
 				const hasErrorStop = errorPresentation.kind === "full";
 				const errorMessage = hasErrorStop ? errorPresentation.text : null;
@@ -559,11 +553,9 @@ export class UiHelpers {
 					resolveWaitingPoll(renderToolName);
 					const toolCallDisplay = compactToolCallMode(this.ctx.settings.get("display.toolCalls"));
 
-					// `display.toolCalls: compact`/`grouped` folds a collapsible read into
-					// the same compact group as any other call; `ReadToolGroupComponent`
-					// stays the `full`-mode path only.
+					// Compact mode renders every read as its own Normal row.
+					// `ReadToolGroupComponent` stays on the full-mode path only.
 					if (renderToolName === "read" && readArgsCollapseIntoGroup(content.arguments) && !toolCallDisplay) {
-						resetCompactToolGroup(toolGroup, true);
 						if (hasErrorStop && errorMessage) {
 							if (!readGroup) {
 								readGroup = new ReadToolGroupComponent({
@@ -623,8 +615,17 @@ export class UiHelpers {
 						: content.arguments;
 
 					if (toolCallDisplay) {
-						const { group, pending } = mountCompactToolCall(this.ctx.chatContainer, toolGroup, toolCallDisplay, this.ctx.toolOutputExpanded, content.id, renderToolName, renderArgs, tool, hasErrorStop && errorMessage ? errorMessage : undefined);
-						if (pending) this.ctx.pendingTools.set(content.id, group);
+						const { component, pending } = mountCompactToolCall(
+							this.ctx.chatContainer,
+							this.ctx.toolOutputExpanded,
+							content.id,
+							renderToolName,
+							renderArgs,
+							tool,
+							undefined,
+							hasErrorStop && errorMessage ? errorMessage : undefined,
+						);
+						if (pending) this.ctx.pendingTools.set(content.id, component);
 						appendAssistantSegment(afterToolSegment);
 						continue;
 					}
@@ -768,7 +769,6 @@ export class UiHelpers {
 			} else {
 				readGroup?.seal();
 				readGroup = null;
-				resetCompactToolGroup(toolGroup, true);
 				// A user prompt closes the displacement window, same as the live path.
 				if (message.role === "user") resolveWaitingPoll();
 				if (message.role === "user") resolveTodoSnapshot();

@@ -15,7 +15,11 @@ import {
 	readArgsHaveTarget,
 } from "../../modes/components/read-tool-group";
 import { TodoReminderComponent } from "../../modes/components/todo-reminder";
-import { compactToolCallMode, type CompactToolGroupHolder, mountCompactToolCall, resetCompactToolGroup } from "../../modes/components/tool-call-compact";
+import {
+	CompactToolCallComponent,
+	compactToolCallMode,
+	mountCompactToolCall,
+} from "../../modes/components/tool-call-compact";
 import {
 	ToolExecutionComponent,
 	type ToolExecutionHandle,
@@ -93,7 +97,6 @@ interface ApprovalPreviewGate {
 
 export class EventController {
 	#lastReadGroup: ReadToolGroupComponent | undefined = undefined;
-	#toolGroup: CompactToolGroupHolder = { current: undefined };
 	/** Timestamp of the current turn's user prompt; drives the usage row's prompt→yield delta. */
 	#turnStartedAt: number | undefined = undefined;
 	/** When the last completed run ended; stale `#turnStartedAt` anchors are cleared against it. */
@@ -105,12 +108,6 @@ export class EventController {
 	// emits one read per completion — does not break it, so a run of consecutive
 	// reads collapses into one group even across completion boundaries.
 	#lastVisibleBlockCount = 0;
-	// Screen-visible counterpart of `#lastVisibleBlockCount`, for the compact
-	// tool-group reset only: thinking counts here only while it is actually
-	// displayed, so a hidden-by-default thinking block between two tool calls
-	// never breaks `2 shell commands` into loose rows. `#resetReadGroup()`
-	// keeps using the upstream count above, unchanged.
-	#lastScreenVisibleBlockCount = 0;
 	#renderedCustomMessages = new Set<string>();
 	#lastIntent: string | undefined = undefined;
 	#backgroundTaskCallIds = new Set<string>();
@@ -368,13 +365,6 @@ export class EventController {
 		this.#lastReadGroup?.finalize();
 		this.#lastReadGroup = undefined;
 	}
-	/** Mirrors {@link #resetReadGroup}: closes the held `display.toolCalls:
-	 * "grouped"` group so a user message, visible assistant prose, or a turn
-	 * boundary breaks a run the same way it breaks a read run — while an
-	 * invisible per-message placeholder does not (Defect 1). */
-	#resetToolGroup(): void {
-		resetCompactToolGroup(this.#toolGroup, false);
-	}
 	/** Freeze foreground tool cards once no live agent turn can complete them. */
 	#sealAbandonedForegroundTools(): void {
 		const background = new Set<ToolExecutionHandle>();
@@ -491,26 +481,111 @@ export class EventController {
 	}
 
 	/**
-	 * Re-key a live streamed tool card whose id changed mid-stream (see
-	 * {@link #streamedToolCallIdByIndex}). Moves every id-keyed tracker from the
-	 * old id to the new one so the next cumulative `message_update` reuses the
-	 * existing card instead of creating a duplicate (#6879). The card component
-	 * itself is id-agnostic (routing is via `pendingTools`), so only the maps and
-	 * the shared read group's entry need re-keying.
+	 * Re-key a live streamed tool call whose id changed mid-stream (see
+	 * {@link #streamedToolCallIdByIndex}). The compact entry, pending route,
+	 * timeline route, and held completion move before settlement.
 	 */
 	#migrateStreamedToolCallId(oldId: string, newId: string): void {
 		// `oldId` may be "" (the block streamed before its id): that empty key still
 		// owns a live card and must migrate. Skip only a no-op or an empty target.
 		if (oldId === newId || !newId) return;
 		const pending = this.ctx.pendingTools.get(oldId);
-		if (pending && !this.ctx.pendingTools.has(newId)) {
-			this.ctx.pendingTools.delete(oldId);
-			this.ctx.pendingTools.set(newId, pending);
-		}
 		const timeline = this.#toolTimelineComponents.get(oldId);
-		if (timeline && !this.#toolTimelineComponents.has(newId)) {
-			this.#toolTimelineComponents.delete(oldId);
-			this.#toolTimelineComponents.set(newId, timeline);
+		const pendingAtFinalId = this.ctx.pendingTools.get(newId);
+		const timelineAtFinalId = this.#toolTimelineComponents.get(newId);
+		const provisional =
+			pending instanceof CompactToolCallComponent
+				? pending
+				: timeline instanceof CompactToolCallComponent
+					? timeline
+					: undefined;
+		const authoritative =
+			pendingAtFinalId instanceof CompactToolCallComponent && pendingAtFinalId !== provisional
+				? pendingAtFinalId
+				: timelineAtFinalId instanceof CompactToolCallComponent && timelineAtFinalId !== provisional
+					? timelineAtFinalId
+					: undefined;
+		let settlementTarget: ToolExecutionHandle | undefined;
+
+		let collisionResolved = false;
+		if (provisional && authoritative) {
+			const provisionalIndex = this.ctx.chatContainer.children.indexOf(provisional);
+			const authoritativeIndex = this.ctx.chatContainer.children.indexOf(authoritative);
+			if (authoritativeIndex >= 0 && (provisionalIndex < 0 || authoritativeIndex < provisionalIndex)) {
+				// The authoritative start won the race and already occupies the
+				// semantic call's earliest transcript position. Remove the later
+				// streamed provisional row and retain the authoritative route.
+				provisional.seal();
+				if (this.ctx.chatContainer.canRemoveBlock(provisional)) {
+					this.ctx.chatContainer.removeChild(provisional);
+				}
+				this.ctx.pendingTools.delete(oldId);
+				this.#toolTimelineComponents.delete(oldId);
+				this.#toolTimelineComponents.set(newId, authoritative);
+				if (authoritative.isTranscriptBlockFinalized()) {
+					this.ctx.pendingTools.delete(newId);
+				} else {
+					this.ctx.pendingTools.set(newId, authoritative);
+				}
+				settlementTarget = authoritative;
+				collisionResolved = true;
+			} else if (provisional.adoptAuthoritativeCall(authoritative, oldId, newId)) {
+				// The streamed provisional row came first. Keep its position,
+				// absorb the authoritative state, and remove the duplicate.
+				if (
+					provisionalIndex >= 0 &&
+					authoritativeIndex > provisionalIndex &&
+					this.ctx.chatContainer.canRemoveBlock(authoritative)
+				) {
+					this.ctx.chatContainer.removeChild(authoritative);
+				}
+				this.ctx.pendingTools.delete(oldId);
+				this.#toolTimelineComponents.delete(oldId);
+				this.#toolTimelineComponents.set(newId, provisional);
+				if (provisional.isTranscriptBlockFinalized()) {
+					this.ctx.pendingTools.delete(newId);
+				} else {
+					this.ctx.pendingTools.set(newId, provisional);
+				}
+				settlementTarget = provisional;
+				collisionResolved = true;
+			}
+		}
+		if (!collisionResolved) {
+			const discardProvisionalCompact =
+				pending instanceof CompactToolCallComponent &&
+				pendingAtFinalId !== undefined &&
+				pendingAtFinalId !== pending;
+			if (discardProvisionalCompact) {
+				pending.seal();
+				if (this.ctx.chatContainer.canRemoveBlock(pending)) {
+					this.ctx.chatContainer.removeChild(pending);
+				}
+				this.ctx.pendingTools.delete(oldId);
+				this.#toolTimelineComponents.delete(oldId);
+			} else {
+				if (pending instanceof CompactToolCallComponent) pending.migrateToolCallId(oldId, newId);
+				if (timeline instanceof CompactToolCallComponent && timeline !== pending) {
+					timeline.migrateToolCallId(oldId, newId);
+				}
+				if (pending) {
+					this.ctx.pendingTools.delete(oldId);
+					if (!this.ctx.pendingTools.has(newId)) this.ctx.pendingTools.set(newId, pending);
+				}
+				if (timeline) {
+					this.#toolTimelineComponents.delete(oldId);
+					if (!this.#toolTimelineComponents.has(newId)) this.#toolTimelineComponents.set(newId, timeline);
+				}
+			}
+			settlementTarget = discardProvisionalCompact ? pendingAtFinalId : pending;
+		}
+
+		const heldCompletion = this.#orphanedToolCompletions.get(oldId);
+		if (heldCompletion !== undefined) {
+			this.#orphanedToolCompletions.delete(oldId);
+			if (!this.#orphanedToolCompletions.has(newId)) {
+				this.#orphanedToolCompletions.set(newId, { ...heldCompletion, toolCallId: newId });
+			}
 		}
 		// The reveal controller is id-keyed; drop the stale target so the loop's
 		// setTarget/bind under the new id owns the paced reveal.
@@ -528,13 +603,8 @@ export class EventController {
 			this.#readToolCallAssistantComponents.delete(oldId);
 			this.#readToolCallAssistantComponents.set(newId, readAssistant);
 		}
-		// A collapsed read renders into a shared group keyed by id; rename its
-		// entry so the row isn't duplicated under the new id.
 		if (pending instanceof ReadToolGroupComponent) pending.renameEntry(oldId, newId);
-		// A fast completion can land under `newId` while the card is still keyed
-		// by `oldId`. Consume it now that the card owns the final id; the normal
-		// creation path is skipped on a re-key (Codex review on #6881).
-		if (pending) this.#settleHeldCompletionIfPresent(newId, pending);
+		if (settlementTarget) this.#settleHeldCompletionIfPresent(newId, settlementTarget);
 	}
 
 	#inlineReadToolImages(
@@ -754,9 +824,7 @@ export class EventController {
 		}
 		this.#pendingMessageUpdate = undefined;
 		this.#resetReadGroup();
-		this.#resetToolGroup();
 		this.#lastVisibleBlockCount = 0;
-		this.#lastScreenVisibleBlockCount = 0;
 		this.#renderedCustomMessages.clear();
 		this.#lastIntent = undefined;
 		this.#toolTimelineComponents.clear();
@@ -945,7 +1013,6 @@ export class EventController {
 			}
 			this.#renderedCustomMessages.add(signature);
 			this.#resetReadGroup();
-			this.#resetToolGroup();
 			// A directly-invoked `/skill:` or writable-collab custom prompt is the
 			// run's initiating message (user attribution): seed the prompt→yield
 			// delta from it, the same as a user message.
@@ -989,7 +1056,6 @@ export class EventController {
 			const signature = `${textContent}\u0000${imageCount}`;
 
 			this.#resetReadGroup();
-			this.#resetToolGroup();
 			this.#resolveDisplaceablePoll();
 			this.#resolveDisplaceableTodo();
 			const wasOptimistic = this.ctx.optimisticUserMessageSignature === signature;
@@ -1035,7 +1101,6 @@ export class EventController {
 			}
 		} else if (event.message.role === "fileMention") {
 			this.#resetReadGroup();
-			this.#resetToolGroup();
 			this.ctx.addMessageToChat(event.message);
 			this.ctx.ui.requestRender();
 		} else if (event.message.role === "assistant") {
@@ -1053,7 +1118,6 @@ export class EventController {
 			}
 			this.#finalizeAbandonedPostToolSegments();
 			this.#lastVisibleBlockCount = 0;
-			this.#lastScreenVisibleBlockCount = 0;
 			this.#streamedToolCallIdByIndex.clear();
 			this.ctx.streamingComponent = createAssistantMessageComponent(this.ctx);
 			this.ctx.streamingMessage = event.message;
@@ -1282,30 +1346,17 @@ export class EventController {
 			const timeline = splitAssistantMessageToolTimeline(this.ctx.streamingMessage);
 			this.#streamingReveal.setTarget(timeline.beforeTools, timeline.hasToolCalls);
 
-			const hideThinking = this.ctx.effectiveHideThinkingBlock;
 			let visibleBlockCount = 0;
-			let screenVisibleBlockCount = 0;
 			for (const content of this.ctx.streamingMessage.content) {
 				const visible =
 					(content.type === "text" && canonicalizeMessage(content.text)) ||
 					(content.type === "thinking" && canonicalizeMessage(content.thinking));
 				if (!visible) continue;
 				visibleBlockCount++;
-				if (content.type === "text" || !hideThinking) screenVisibleBlockCount++;
 			}
 			if (visibleBlockCount > this.#lastVisibleBlockCount) {
 				this.#resetReadGroup();
 				this.#lastVisibleBlockCount = visibleBlockCount;
-			}
-			// The compact tool group closes on content the user can actually see:
-			// text always, thinking only while it is displayed. The model emits a
-			// thinking block between practically every pair of tool calls, so
-			// counting it unconditionally (`visibleBlockCount` above, upstream's
-			// own signal for `#resetReadGroup()`) breaks the group on content
-			// hidden by default, splitting `2 shell commands` into loose rows.
-			if (screenVisibleBlockCount > this.#lastScreenVisibleBlockCount) {
-				this.#resetToolGroup();
-				this.#lastScreenVisibleBlockCount = screenVisibleBlockCount;
 			}
 
 			// Content blocks stream sequentially: a toolCall block can only begin
@@ -1339,9 +1390,8 @@ export class EventController {
 				const tool = this.ctx.viewSession.getToolByName(content.name);
 				const renderToolName = toolRenderName(content.name, tool);
 				const compactMode = compactToolCallMode(settings.get("display.toolCalls"));
-				// `display.toolCalls: compact`/`grouped` folds a collapsible read into
-				// the same compact group as any other call (Compact rendering
-				// contract); `ReadToolGroupComponent` stays the `full`-mode path only.
+				// Compact mode renders every read as its own Normal row.
+				// `ReadToolGroupComponent` stays on the full-mode path only.
 				if (renderToolName === "read" && !compactMode) {
 					if (!readArgsHaveTarget(content.arguments)) {
 						// Args still streaming — defer until path is parseable so we can route to the
@@ -1358,7 +1408,6 @@ export class EventController {
 							// A completed read remains in the timeline after leaving pendingTools.
 							this.#resolveDisplaceablePoll(renderToolName);
 							this.#trackReadToolCall(content.id, content.arguments);
-							this.#resetToolGroup();
 							const group = this.#getReadGroup();
 							group.updateArgs(content.arguments, content.id);
 							this.ctx.pendingTools.set(content.id, group);
@@ -1400,10 +1449,17 @@ export class EventController {
 					this.#resolveDisplaceablePoll(renderToolName);
 					this.#resetReadGroup();
 					if (compactMode) {
-						const { group } = mountCompactToolCall(this.ctx.chatContainer, this.#toolGroup, compactMode, this.ctx.toolOutputExpanded, content.id, renderToolName, renderArgs, tool);
-						this.ctx.pendingTools.set(content.id, group);
-						this.#toolTimelineComponents.set(content.id, group);
-						this.#settleHeldCompletionIfPresent(content.id, group);
+						const { component } = mountCompactToolCall(
+							this.ctx.chatContainer,
+							this.ctx.toolOutputExpanded,
+							content.id,
+							renderToolName,
+							renderArgs,
+							tool,
+						);
+						this.ctx.pendingTools.set(content.id, component);
+						this.#toolTimelineComponents.set(content.id, component);
+						this.#settleHeldCompletionIfPresent(content.id, component);
 						continue;
 					}
 					const component = new ToolExecutionComponent(
@@ -1633,7 +1689,6 @@ export class EventController {
 						false);
 				if (!usageAttached) {
 					this.#resetReadGroup();
-					this.#resetToolGroup();
 					this.ctx.chatContainer.addChild(
 						createUsageRowBlock(
 							event.message.usage,
@@ -1683,6 +1738,29 @@ export class EventController {
 			setTerminalTitleState("attention");
 		}
 		this.#resolveDisplaceablePoll(renderToolName);
+		const currentTurnComponent = this.#toolTimelineComponents.get(event.toolCallId);
+		if (
+			!this.ctx.pendingTools.has(event.toolCallId) &&
+			(currentTurnComponent instanceof CompactToolCallComponent ||
+				currentTurnComponent instanceof ToolExecutionComponent ||
+				currentTurnComponent instanceof ReadToolGroupComponent) &&
+			currentTurnComponent.isTranscriptBlockFinalized()
+		) {
+			// A held completion may have settled the streamed row before this
+			// delayed start arrives. Refresh its authoritative start data in place
+			// rather than appending a second current-turn row.
+			this.#toolArgsReveal.finish(event.toolCallId);
+			currentTurnComponent.updateArgs(event.args, event.toolCallId);
+			currentTurnComponent.setArgsComplete(event.toolCallId);
+			if (currentTurnComponent instanceof CompactToolCallComponent) {
+				currentTurnComponent.updateIntent(event.intent, event.toolCallId);
+			}
+			currentTurnComponent.setExecutionStarted(event.toolCallId);
+			this.#executionStartedCallIds.add(event.toolCallId);
+			this.ctx.ui.requestRender();
+			this.#startToolApprovalPreview(event.toolCallId);
+			return;
+		}
 		if (!this.ctx.pendingTools.has(event.toolCallId)) {
 			const stale = this.#priorTurnToolComponents.get(event.toolCallId);
 			if (stale) {
@@ -1692,11 +1770,9 @@ export class EventController {
 					this.ctx.chatContainer.removeChild(stale);
 				}
 			}
-			// `display.toolCalls: compact`/`grouped` folds a collapsible read into
-			// the same compact group as any other call; `ReadToolGroupComponent`
-			// stays the `full`-mode path only.
+			// Compact mode gives every call its own Normal row.
+			// `ReadToolGroupComponent` remains the full-mode path only.
 			if (renderToolName === "read" && readArgsCollapseIntoGroup(event.args) && !compactMode) {
-				this.#resetToolGroup();
 				this.#trackReadToolCall(event.toolCallId, event.args);
 				if (!this.#toolTimelineComponents.has(event.toolCallId)) {
 					const group = this.#getReadGroup();
@@ -1712,12 +1788,20 @@ export class EventController {
 
 			this.#resetReadGroup();
 			if (compactMode) {
-				const { group } = mountCompactToolCall(this.ctx.chatContainer, this.#toolGroup, compactMode, this.ctx.toolOutputExpanded, event.toolCallId, renderToolName, event.args, tool);
-				group.setExecutionStarted(event.toolCallId);
+				const { component } = mountCompactToolCall(
+					this.ctx.chatContainer,
+					this.ctx.toolOutputExpanded,
+					event.toolCallId,
+					renderToolName,
+					event.args,
+					tool,
+					event.intent,
+				);
+				component.setExecutionStarted(event.toolCallId);
 				this.#executionStartedCallIds.add(event.toolCallId);
-				this.ctx.pendingTools.set(event.toolCallId, group);
-				this.#toolTimelineComponents.set(event.toolCallId, group);
-				this.#settleHeldCompletionIfPresent(event.toolCallId, group);
+				this.ctx.pendingTools.set(event.toolCallId, component);
+				this.#toolTimelineComponents.set(event.toolCallId, component);
+				this.#settleHeldCompletionIfPresent(event.toolCallId, component);
 				this.ctx.ui.requestRender();
 				this.#startToolApprovalPreview(event.toolCallId);
 				return;
@@ -1766,6 +1850,9 @@ export class EventController {
 				component.updateArgs(event.args, event.toolCallId);
 				if (typeof component.setArgsComplete === "function") {
 					component.setArgsComplete(event.toolCallId);
+				}
+				if (component instanceof CompactToolCallComponent) {
+					component.updateIntent(event.intent, event.toolCallId);
 				}
 				if (typeof component.setExecutionStarted === "function") {
 					component.setExecutionStarted(event.toolCallId);
@@ -2119,7 +2206,6 @@ export class EventController {
 		this.#orphanedToolCompletions.clear();
 		this.#postToolAssistantComponents.clear();
 		this.#resetReadGroup();
-		this.#resetToolGroup();
 		// The turn is over: nothing else lands this turn, so the waiting poll is
 		// final history — seal it instead of letting its spinner tick while idle.
 		this.#resolveDisplaceablePoll();

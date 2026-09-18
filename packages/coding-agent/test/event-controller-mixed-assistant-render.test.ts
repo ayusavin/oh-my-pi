@@ -2,7 +2,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:
 import { type } from "@oh-my-pi/omptype";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, ToolCall, ToolResultMessage, Usage } from "@oh-my-pi/pi-ai";
-import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AssistantMessageComponent } from "@oh-my-pi/pi-coding-agent/modes/components/assistant-message";
 import { ReadToolGroupComponent } from "@oh-my-pi/pi-coding-agent/modes/components/read-tool-group";
 import { ToolExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components/tool-execution";
@@ -87,6 +87,7 @@ describe("EventController mixed assistant text/tool rendering", () => {
 	beforeEach(async () => {
 		resetSettingsForTest();
 		await Settings.init({ inMemory: true, overrides: { "display.smoothStreaming": false } });
+		settings.set("display.toolCalls", "full");
 	});
 
 	afterEach(() => {

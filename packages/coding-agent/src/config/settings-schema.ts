@@ -1404,14 +1404,14 @@ export const SETTINGS_SCHEMA = {
 
 	"display.toolCalls": {
 		type: "enum",
-		values: ["full", "compact", "grouped"] as const,
-		default: "full",
+		values: ["full", "compact"] as const,
+		default: "compact",
 		ui: {
 			tab: "appearance",
 			group: "Display",
 			label: "Tool Call Display",
 			description:
-				"How tool calls render in the transcript: full keeps today's card; compact shows one line per call; grouped also folds consecutive same-turn calls into one expandable row",
+				"How tool calls render in the transcript: compact (Normal) shows one row per action with its state, target, and intent; full (Verbose) shows full cards",
 		},
 	},
 
@@ -1449,13 +1449,13 @@ export const SETTINGS_SCHEMA = {
 
 	"display.collapseCompacted": {
 		type: "boolean",
-		default: true,
+		default: false,
 		ui: {
 			tab: "appearance",
 			group: "Display",
 			label: "Collapse Compacted History",
 			description:
-				"Collapse pre-compaction history behind the summary divider on the live transcript; disable to keep the full transcript inline with dividers at each compaction point",
+				"Keep the full transcript inline across model compaction by default; enable to collapse pre-compaction history behind the summary divider",
 		},
 	},
 

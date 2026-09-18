@@ -1,9 +1,7 @@
 /**
- * Transcript rebuild (focus replay, theme/settings change, `/resume`) must
- * group consecutive tool calls the same way the live stream does: a thinking
- * block the user cannot see is not a group boundary. The live path counts
- * screen-visible blocks; these cover the two rebuild paths that used to close
- * the group on any thinking block and rendered every call as its own row.
+ * Transcript rebuilds preserve one compact component per tool call. Hidden
+ * thinking remains transparent without merging calls inside or across assistant
+ * messages.
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
@@ -23,7 +21,7 @@ beforeAll(async () => {
 
 beforeEach(async () => {
 	await Settings.init({ inMemory: true });
-	settings.set("display.toolCalls", "grouped");
+	settings.set("display.toolCalls", "compact");
 });
 
 afterEach(() => {
@@ -54,6 +52,19 @@ function thinkingThenBash(id: string, command: string): AgentMessage {
 	} as unknown as AgentMessage;
 }
 
+function compatibleBashBatch(): AgentMessage {
+	const message = thinkingThenBash("bash-1", "echo one");
+	return {
+		...message,
+		content: [
+			{ type: "thinking", thinking: "why echo one" },
+			{ type: "toolCall", id: "bash-1", name: "bash", arguments: { command: "echo one", i: "Inspect source" } },
+			{ type: "thinking", thinking: "why echo two" },
+			{ type: "toolCall", id: "bash-2", name: "bash", arguments: { command: "echo two", i: "Inspect source" } },
+		],
+	} as AgentMessage;
+}
+
 function entries(messages: AgentMessage[]): SessionMessageEntry[] {
 	return messages.map((message, index) => ({
 		type: "message" as const,
@@ -64,12 +75,12 @@ function entries(messages: AgentMessage[]): SessionMessageEntry[] {
 	}));
 }
 
-function compactGroups(container: { children: readonly unknown[] }): CompactToolCallComponent[] {
+function compactRows(container: { children: readonly unknown[] }): CompactToolCallComponent[] {
 	return container.children.filter((c): c is CompactToolCallComponent => c instanceof CompactToolCallComponent);
 }
 
-function row(group: CompactToolCallComponent): string {
-	return Bun.stripANSI(group.render(120).join("\n"));
+function rowText(component: CompactToolCallComponent): string {
+	return Bun.stripANSI(component.render(120).join("\n"));
 }
 
 function builder(hideThinking: boolean): ChatTranscriptBuilder {
@@ -89,7 +100,7 @@ function uiHelpers(hideThinking: boolean): { ctx: InteractiveModeContext; helper
 		ui: { requestRender: vi.fn() },
 		statusLine: { invalidate: vi.fn() },
 		updateEditorBorderColor: vi.fn(),
-		settings: { get: (key: string) => (key === "display.toolCalls" ? "grouped" : false) },
+		settings: { get: (key: string) => (key === "display.toolCalls" ? "compact" : false) },
 		addMessageToChat: (message: AgentMessage) => helpers.addMessageToChat(message),
 		session: {
 			retryAttempt: 0,
@@ -109,37 +120,45 @@ function uiHelpers(hideThinking: boolean): { ctx: InteractiveModeContext; helper
 	return { ctx, helpers };
 }
 
-describe("compact tool group across a transcript rebuild", () => {
-	it("keeps two turns' calls in one group when their thinking is hidden", () => {
+describe("compact rows across transcript rebuilds", () => {
+	it("renders tool-only assistant messages as separate compact components", () => {
 		const target = builder(true);
 		target.rebuild(entries([thinkingThenBash("bash-1", "echo one"), thinkingThenBash("bash-2", "echo two")]));
 
-		const groups = compactGroups(target.container);
-		expect(groups).toHaveLength(1);
-		expect(row(groups[0]!)).toContain("2 shell commands");
+		const rows = compactRows(target.container);
+		expect(rows).toHaveLength(2);
+		expect(rows.every(row => row.isTranscriptBlockFinalized() === false)).toBe(true);
 	});
 
-	it("closes the group at thinking the user can see", () => {
-		const target = builder(false);
-		target.rebuild(entries([thinkingThenBash("bash-1", "echo one"), thinkingThenBash("bash-2", "echo two")]));
+	it("renders compatible calls in one rebuilt assistant message as separate rows", () => {
+		const message = compatibleBashBatch();
+		const target = builder(true);
+		target.rebuild(entries([message]));
 
-		const groups = compactGroups(target.container);
-		expect(groups).toHaveLength(2);
-		expect(row(groups[0]!)).toContain("echo one");
-		expect(row(groups[1]!)).toContain("echo two");
+		const rows = compactRows(target.container);
+		expect(rows).toHaveLength(2);
+		expect(rows.map(rowText).join("\n")).toContain("echo one");
+		expect(rows.map(rowText).join("\n")).toContain("echo two");
+
+		const replay = uiHelpers(true);
+		replay.helpers.renderSessionContext({ messages: [message] } as unknown as SessionContext);
+		expect(compactRows(replay.ctx.chatContainer)).toHaveLength(2);
 	});
+	it("finalizes a completed trailing replay row without a usage row", () => {
+		const target = builder(true);
+		const assistant = thinkingThenBash("bash-1", "echo one");
+		const result = {
+			role: "toolResult",
+			toolCallId: "bash-1",
+			toolName: "bash",
+			content: [{ type: "text", text: "done" }],
+			isError: false,
+			timestamp: Date.now(),
+		} as unknown as AgentMessage;
 
-	it("groups the same way when the focus-replay rebuild renders the turns", () => {
-		const messages = [thinkingThenBash("bash-1", "echo one"), thinkingThenBash("bash-2", "echo two")];
+		target.rebuild(entries([assistant, result]));
 
-		const hidden = uiHelpers(true);
-		hidden.helpers.renderSessionContext({ messages } as unknown as SessionContext);
-		const grouped = compactGroups(hidden.ctx.chatContainer);
-		expect(grouped).toHaveLength(1);
-		expect(row(grouped[0]!)).toContain("2 shell commands");
-
-		const shown = uiHelpers(false);
-		shown.helpers.renderSessionContext({ messages } as unknown as SessionContext);
-		expect(compactGroups(shown.ctx.chatContainer)).toHaveLength(2);
+		const [row] = compactRows(target.container);
+		expect(row?.isTranscriptBlockFinalized()).toBe(true);
 	});
 });

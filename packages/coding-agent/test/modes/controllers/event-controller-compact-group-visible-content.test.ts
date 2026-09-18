@@ -1,11 +1,7 @@
 /**
- * The compact tool group's reset signal counts only content the user can
- * actually see (`event-controller.ts` `#handleMessageUpdate`): text always,
- * thinking only while it is displayed. The model emits a thinking block
- * between practically every pair of tool calls; counted unconditionally the
- * hidden-by-default block would break `2 shell commands` into loose rows.
- * `#resetReadGroup()` keeps upstream's own unchanged signal — thinking always
- * counts for the read group.
+ * Compact rendering gives every generic tool call a separate Normal row.
+ * Hidden thinking cannot merge calls or seal a pending row from an earlier
+ * assistant message.
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
@@ -61,8 +57,8 @@ function assistantMessage(content: Block[]): AssistantMessage {
 	};
 }
 
-function createFixture() {
-	const ctx = createInteractiveModeContext();
+function createFixture(hideThinking = false) {
+	const ctx = createInteractiveModeContext({ hideThinkingBlock: hideThinking });
 	return { controller: new EventController(ctx), chatContainer: ctx.chatContainer };
 }
 
@@ -73,82 +69,55 @@ async function streamCompletion(controller: EventController, content: Block[]): 
 	await controller.handleEvent({ type: "message_update", message } as AgentSessionEvent);
 }
 
-function compactGroups(chatContainer: TranscriptContainer): CompactToolCallComponent[] {
+function compactRows(chatContainer: TranscriptContainer): CompactToolCallComponent[] {
 	return chatContainer.children.filter((c): c is CompactToolCallComponent => c instanceof CompactToolCallComponent);
 }
 
-function compactRow(group: CompactToolCallComponent): string {
-	return Bun.stripANSI(group.render(120).join("\n")).trimEnd();
+function compactRow(row: CompactToolCallComponent): string {
+	return Bun.stripANSI(row.render(120).join("\n")).trimEnd();
 }
 
-describe("EventController compact tool-group visible-content reset", () => {
-	it("a hidden thinking block between two tool calls keeps them in one group", async () => {
-		settings.set("display.toolCalls", "grouped");
-		const { controller, chatContainer } = createFixture();
+describe("EventController compact rows with visible content", () => {
+	it("keeps same-tool calls separate across hidden thinking", async () => {
+		const { controller, chatContainer } = createFixture(true);
 
 		await streamCompletion(controller, [
 			thinking("considering which files to touch"),
-			toolCall("bash", "bash-1", { command: "echo first" }),
+			toolCall("bash", "bash-1", { command: "echo first", i: "Inspect source" }),
 			thinking("second call rationale"),
-			toolCall("bash", "bash-2", { command: "echo second" }),
+			toolCall("bash", "bash-2", { command: "echo second", i: "Inspect source" }),
 		]);
 
-		const groups = compactGroups(chatContainer);
-		expect(groups).toHaveLength(1);
-		expect(groups[0]!.size).toBe(2);
-		expect(compactRow(groups[0]!)).toContain("2 shell commands");
+		const rows = compactRows(chatContainer);
+		expect(rows).toHaveLength(2);
+		expect(rows.map(row => compactRow(row)).join("\n")).toContain("queued bash(echo first)");
+		expect(rows.map(row => compactRow(row)).join("\n")).toContain("queued bash(echo second)");
 	});
 
-	it("a displayed thinking block closes the group (displayed = counted)", async () => {
-		settings.set("display.toolCalls", "grouped");
-		// The shared stub's `effectiveHideThinkingBlock` getter reads its own
-		// `hideThinkingBlock` member, which defaults false — the *displayed*
-		// half of the split (production's default true is the first test).
-		const ctx = createInteractiveModeContext();
-		const controller = new EventController(ctx);
-		const chatContainer = ctx.chatContainer;
+	it("does not seal a pending row because the next assistant message starts", async () => {
+		const { controller, chatContainer } = createFixture(true);
+		await streamCompletion(controller, [toolCall("bash", "bash-1", { command: "echo first" })]);
+		await streamCompletion(controller, [toolCall("bash", "bash-2", { command: "echo second" })]);
 
-		await streamCompletion(controller, [thinking("considering which files to touch"), toolCall("bash", "bash-1", { command: "echo first" })]);
-		await streamCompletion(controller, [thinking("second call rationale"), toolCall("bash", "bash-2", { command: "echo second" })]);
-
-		// With thinking on screen, the visible block is real content: the run
-		// closes at it and the next call starts a fresh group.
-		const groups = compactGroups(chatContainer);
-		expect(groups).toHaveLength(2);
-		expect(groups[0]!.size).toBe(1);
-		expect(groups[1]!.size).toBe(1);
+		const rows = compactRows(chatContainer);
+		expect(rows).toHaveLength(2);
+		expect(rows[0]!.isTranscriptBlockFinalized()).toBe(false);
 	});
 
-	it("a mixed run of two bash calls and one grep renders one group naming both tools", async () => {
-		settings.set("display.toolCalls", "grouped");
+	it("keeps the full-mode read grouping contract", async () => {
+		settings.set("display.toolCalls", "full");
 		const { controller, chatContainer } = createFixture();
-
 		await streamCompletion(controller, [
-			toolCall("bash", "bash-1", { command: "echo first" }),
-			toolCall("bash", "bash-2", { command: "echo second" }),
-			toolCall("grep", "grep-1", { pattern: "needle", path: "/tmp/hay" }),
+			thinking("considering the next read"),
+			toolCall("read", "read-1", { path: "/tmp/first.txt" }),
 		]);
-
-		const groups = compactGroups(chatContainer);
-		expect(groups).toHaveLength(1);
-		const row = compactRow(groups[0]!);
-		expect(row).toContain("2 shell commands");
-		expect(row).toContain("1 search");
-		expect(row).not.toContain("Called grep");
-	});
-
-	it("the read group keeps upstream's own signal, untouched by the screen-visible split", async () => {
-		const { controller, chatContainer } = createFixture();
-
-		// Upstream's `#lastVisibleBlockCount` behavior is unchanged by this
-		// fix — its full coverage lives in `event-controller-read-grouping.test.ts`
-		// (which still passes); this is the one contrasting case: non-empty
-		// thinking in BOTH completions keeps the read runs separate there.
-		await streamCompletion(controller, [thinking("considering the next read"), toolCall("read", "read-1", { path: "/tmp/first.txt" })]);
-		await streamCompletion(controller, [thinking("more reasoning"), toolCall("read", "read-2", { path: "/tmp/second.txt" })]);
+		await streamCompletion(controller, [
+			thinking("more reasoning"),
+			toolCall("read", "read-2", { path: "/tmp/second.txt" }),
+		]);
 
 		const groups = chatContainer.children.filter(
-			(c): c is ReadToolGroupComponent => c instanceof ReadToolGroupComponent,
+			(child): child is ReadToolGroupComponent => child instanceof ReadToolGroupComponent,
 		);
 		expect(groups).toHaveLength(2);
 	});

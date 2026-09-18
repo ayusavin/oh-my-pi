@@ -1,20 +1,10 @@
 /**
- * `display.toolCalls` (`full` | `compact` | `grouped`).
+ * `display.toolCalls` (`full` | `compact`).
  *
- * `full` is the default and must keep constructing `ToolExecutionComponent`
- * exactly as upstream does — the daily upstream merge can silently change
- * that construction, so the regression test below asserts byte-for-byte
- * equality against a component built the same way, outside the controller.
- * `compact` collapses a call to one line: the tool's name and its primary
- * argument (`.downstream/spec/transcript.md`'s "Compact rendering contract",
- * C1-C8) — never the model's own intent sentence, never a `key=value` dump,
- * never a status word or byte count. `grouped` additionally folds a run of
- * consecutive calls — merging across message boundaries as long as nothing
- * visible interrupts them — into one parent summary row. Expanding that row
- * (ctrl+o or click) renders each call's full card. A collapsible `read` call
- * joins that same group like any other call once `display.toolCalls` is
- * `compact`/`grouped`; `ReadToolGroupComponent` keeps owning it only in
- * `full` mode.
+ * `compact` is the Normal default: every call owns a separate row showing its
+ * state, primary target, and intent. `full` remains the explicit Verbose card
+ * path. Compact reads follow the same per-action path; `ReadToolGroupComponent`
+ * remains only for full-mode reads.
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
@@ -22,9 +12,7 @@ import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-ag
 import { ReadToolGroupComponent } from "@oh-my-pi/pi-coding-agent/modes/components/read-tool-group";
 import {
 	CompactToolCallComponent,
-	type CompactToolGroupHolder,
 	mountCompactToolCall,
-	resetCompactToolGroup,
 } from "@oh-my-pi/pi-coding-agent/modes/components/tool-call-compact";
 import { ToolExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components/tool-execution";
 import { TranscriptContainer } from "@oh-my-pi/pi-coding-agent/modes/components/transcript-container";
@@ -41,15 +29,15 @@ beforeAll(async () => {
 });
 
 describe("CompactToolCallComponent", () => {
-	it("renders `Tool(primary argument)` with no status word or byte count", () => {
+	it("renders a Normal row with intent and primary target", () => {
 		const component = new CompactToolCallComponent();
-		component.addCall("call-1", "bash", "Bash", { command: "ls -la" }, undefined);
+		component.addCall("call-1", "bash", "Bash", { command: "ls -la", i: "Inspect the directory" }, undefined);
 		component.setExecutionStarted("call-1");
 		component.updateResult({ content: [{ type: "text", text: "a.txt\nb.txt\n" }], isError: false }, false, "call-1");
 		const text = plain(component.render(120));
+		expect(text).toContain("Inspect the directory");
 		expect(text).toContain("Bash(ls -la)");
-		expect(text).not.toContain("ok");
-		expect(text).not.toContain("B)");
+		expect(text).not.toContain("command=");
 	});
 
 	it("a search row carries its pattern, not its directory", () => {
@@ -60,91 +48,67 @@ describe("CompactToolCallComponent", () => {
 	});
 });
 
-describe("CompactToolCallComponent parent-row expansion", () => {
+describe("CompactToolCallComponent row expansion", () => {
 	beforeAll(() => {
 		initTheme();
 	});
 
-	function settledGroup(): CompactToolCallComponent {
+	function settledRow(id: string, command: string): CompactToolCallComponent {
 		const component = new CompactToolCallComponent();
-		component.addCall("call-1", "bash", "Bash", { command: "echo first argument" }, undefined);
-		component.addCall("call-2", "bash", "Bash", { command: "echo second argument" }, undefined);
-		component.updateResult({ content: [{ type: "text", text: "first output" }], isError: false }, false, "call-1");
-		component.updateResult({ content: [{ type: "text", text: "second output" }], isError: false }, false, "call-2");
+		component.addCall(id, "bash", "Bash", { command, i: "Inspect source files" }, undefined);
+		component.updateResult({ content: [{ type: "text", text: `${id} output` }], isError: false }, false, id);
 		return component;
 	}
 
-	it("renders a collapsed group as exactly one parent summary row", () => {
-		const component = settledGroup();
+	it("expands only the clicked compact call into its full card", () => {
+		const first = settledRow("call-1", "echo first");
+		const second = settledRow("call-2", "echo second");
 
-		const rows = component.render(120);
+		first.getViewportClickAction()!(0);
 
-		expect(rows).toHaveLength(1);
-		expect(plain(rows)).toContain("2 shell commands");
+		expect(plain(first.render(120))).toContain("call-1 output");
+		expect(first.children.some(child => child instanceof ToolExecutionComponent)).toBe(true);
+		expect(second.children.some(child => child instanceof ToolExecutionComponent)).toBe(false);
 	});
 
-	it("expands every call card from the parent and collapses from the same row", () => {
-		const component = settledGroup();
-		const collapsed = plain(component.render(120));
+	it("lets global Verbose expansion override a local collapse", () => {
+		const component = settledRow("call-1", "echo first");
 
 		component.getViewportClickAction()!(0);
-		const expanded = plain(component.render(120));
-		expect(expanded).toContain("echo first argument");
-		expect(expanded).toContain("first output");
-		expect(expanded).toContain("echo second argument");
-		expect(expanded).toContain("second output");
-
 		component.getViewportClickAction()!(0);
-		expect(plain(component.render(120))).toBe(collapsed);
-	});
-	it("exposes no click target for any full-card row", () => {
-		const component = settledGroup();
-		component.getViewportClickAction()!(0);
-		const expandedRows = component.render(120);
-		expect(expandedRows.length).toBeGreaterThan(1);
+		expect(component.children.some(child => child instanceof ToolExecutionComponent)).toBe(false);
 
-		for (let row = 1; row < expandedRows.length; row++) {
-			expect(component.getClickFocusAgentIds(row)).toEqual([]);
-		}
-		const expanded = plain(expandedRows);
-		component.getViewportClickAction()!(1);
-		expect(plain(component.render(120))).toBe(expanded);
+		component.setExpanded(true);
+		expect(plain(component.render(120))).toContain("call-1 output");
+		expect(component.children.some(child => child instanceof ToolExecutionComponent)).toBe(true);
 	});
 
-	it("maps every width-40 parent segment to the same toggle action", () => {
+	it("keeps the primary target visible and truncates a long intent", () => {
 		const component = new CompactToolCallComponent();
 		component.addCall(
 			"call-1",
-			"bash",
-			"Bash",
-			{ command: "echo a deliberately long parent row with a wrapped continuation segment" },
+			"read",
+			"Read",
+			{ path: "src/file.ts" },
 			undefined,
+			`Inspect ${"source context ".repeat(12)}INTENT_TAIL`,
 		);
-		component.updateResult({ content: [{ type: "text", text: "wrapped output" }], isError: false }, false, "call-1");
 
-		const collapsedRows = component.render(40);
-		expect(collapsedRows.length).toBeGreaterThan(1);
-		const parentIds = collapsedRows.flatMap((_row, index) => component.getClickFocusAgentIds(index));
-		expect(parentIds).toHaveLength(collapsedRows.length);
-		expect([...new Set(parentIds)]).toHaveLength(1);
-
-		component.getViewportClickAction()!(collapsedRows.length - 1);
-		expect(plain(component.render(40))).toContain("wrapped output");
+		const text = plain(component.render(40));
+		expect(text).toContain("Read(src/file.ts)");
+		expect(text).toContain("…");
+		expect(text).not.toContain("INTENT_TAIL");
 	});
 
-	it("keeps a sealed block mutable only for click-created expansion", () => {
-		const component = settledGroup();
-		component.seal();
-		expect(component.isTranscriptBlockFinalized()).toBe(true);
+	it("keeps finality independent of local and global expansion", () => {
+		const component = new CompactToolCallComponent();
+		component.addCall("call-1", "bash", "Bash", { command: "echo hi" }, undefined);
 
-		component.setExpanded(true);
-		expect(component.isTranscriptBlockFinalized()).toBe(true);
-		component.setExpanded(false);
-		component.render(120);
 		component.getViewportClickAction()!(0);
+		component.setExpanded(true);
 		expect(component.isTranscriptBlockFinalized()).toBe(false);
 
-		component.getViewportClickAction()!(0);
+		component.updateResult({ content: [{ type: "text", text: "done" }], isError: false }, false, "call-1");
 		expect(component.isTranscriptBlockFinalized()).toBe(true);
 	});
 });
@@ -236,10 +200,6 @@ function toolCall(name: string, id: string, args: Record<string, unknown>): Bloc
 	return { type: "toolCall", id, name, arguments: args } as Block;
 }
 
-function thinking(text: string): Block {
-	return { type: "thinking", thinking: text } as Block;
-}
-
 function assistantMessage(content: Block[]): AssistantMessage {
 	return {
 		role: "assistant",
@@ -272,15 +232,7 @@ async function streamCompletion(controller: EventController, content: Block[]): 
 	await controller.handleEvent({ type: "message_update", message } as AgentSessionEvent);
 }
 
-/** Drive a user prompt (`message_start` only — that is all a group-reset boundary needs). */
-async function sendUserMessage(controller: EventController, text: string): Promise<void> {
-	await controller.handleEvent({
-		type: "message_start",
-		message: { role: "user", content: [{ type: "text", text }], attribution: "user", timestamp: Date.now() },
-	} as AgentSessionEvent);
-}
-
-function compactGroups(chatContainer: TranscriptContainer): CompactToolCallComponent[] {
+function compactRows(chatContainer: TranscriptContainer): CompactToolCallComponent[] {
 	return chatContainer.children.filter((c): c is CompactToolCallComponent => c instanceof CompactToolCallComponent);
 }
 
@@ -293,21 +245,19 @@ function asyncResultMessage(details: Record<string, unknown>): CustomMessage {
 }
 
 describe("display.toolCalls", () => {
-	it("defaults to full", () => {
-		expect(settings.get("display.toolCalls")).toBe("full");
+	it("defaults to compact Normal rows", () => {
+		expect(settings.get("display.toolCalls")).toBe("compact");
 	});
 
-	it("full renders the exact ToolExecutionComponent construction upstream builds", async () => {
+	it("full remains the explicit ToolExecutionComponent path", async () => {
+		settings.set("display.toolCalls", "full");
 		const { controller, chatContainer, ctx } = createFixture();
 		await streamCompletion(controller, [toolCall("bash", "bash-1", { command: "echo hi" })]);
 
 		const rendered = chatContainer.children.find(child => child instanceof ToolExecutionComponent);
 		expect(rendered).toBeInstanceOf(ToolExecutionComponent);
-		expect(compactGroups(chatContainer)).toHaveLength(0);
+		expect(compactRows(chatContainer)).toHaveLength(0);
 
-		// Same construction event-controller.ts's `full` branch performs, built
-		// directly instead of through the controller: proves the branch added
-		// for `display.toolCalls` left this call path untouched.
 		const reference = new ToolExecutionComponent(
 			"bash",
 			{ command: "echo hi" },
@@ -320,21 +270,35 @@ describe("display.toolCalls", () => {
 		expect(plain((rendered as ToolExecutionComponent).render(120))).toBe(plain(reference.render(120)));
 	});
 
-	it("compact renders `Tool(primary argument)` — no key=value, no intent sentence, no status word or byte count (C1, C2, C3)", async () => {
+	it("compact exposes args.i as the action intent with the primary target", async () => {
 		settings.set("display.toolCalls", "compact");
 		const { controller, chatContainer } = createFixture();
 		await streamCompletion(controller, [
 			toolCall("bash", "bash-1", { command: "systemctl restart gateway", i: "Restarting the gateway" }),
 		]);
 
-		const groups = compactGroups(chatContainer);
-		expect(groups).toHaveLength(1);
-		const text = plain(groups[0]!.render(120));
+		const rows = compactRows(chatContainer);
+		expect(rows).toHaveLength(1);
+		const text = plain(rows[0]!.render(120));
+		expect(text).toContain("Restarting the gateway");
 		expect(text).toContain("(systemctl restart gateway)");
-		expect(text).not.toContain("Restarting the gateway"); // the model's own intent (C2) never reaches the row
-		expect(text).not.toContain("command="); // no key=value dump of the argument object (C1)
-		expect(text).not.toMatch(/\bok\b/); // success is the icon alone, no status word (C3)
-		expect(text).not.toMatch(/\d+\s*B\b/); // never a byte count (C3)
+		expect(text).not.toContain("command=");
+	});
+
+	it("uses the authoritative live execution intent when it is available", async () => {
+		settings.set("display.toolCalls", "compact");
+		const { controller, chatContainer } = createFixture();
+		const message = assistantMessage([toolCall("bash", "bash-1", { command: "echo source" })]);
+		await controller.handleEvent({ type: "message_start", message } as AgentSessionEvent);
+		await controller.handleEvent({
+			type: "tool_execution_start",
+			toolCallId: "bash-1",
+			toolName: "bash",
+			args: { command: "echo source" },
+			intent: "Inspect source files",
+		} as AgentSessionEvent);
+
+		expect(plain(compactRows(chatContainer)[0]!.render(120))).toContain("Inspect source files");
 	});
 
 	it("compact never folds a second call into the first call's row", async () => {
@@ -345,136 +309,226 @@ describe("display.toolCalls", () => {
 			toolCall("bash", "bash-2", { command: "echo second" }),
 		]);
 
-		const groups = compactGroups(chatContainer);
-		expect(groups).toHaveLength(2);
-		expect(groups[0]!.render(120)).toHaveLength(1);
-		expect(groups[1]!.render(120)).toHaveLength(1);
+		const rows = compactRows(chatContainer);
+		expect(rows).toHaveLength(2);
+		expect(rows[0]!.render(120)).toHaveLength(1);
+		expect(rows[1]!.render(120)).toHaveLength(1);
 	});
 
-	it("a long primary argument truncates to the budget with a single ellipsis, never mid-escape (C8)", async () => {
+	it("bounds a long primary argument without exposing its raw full value (C8)", async () => {
 		settings.set("display.toolCalls", "compact");
 		const { controller, chatContainer } = createFixture();
 		const longCommand = `echo ${"x".repeat(200)}`;
 		await streamCompletion(controller, [toolCall("bash", "bash-1", { command: longCommand })]);
 
-		const text = plain(compactGroups(chatContainer)[0]!.render(400));
+		const text = plain(compactRows(chatContainer)[0]!.render(400));
 		expect(text).not.toContain(longCommand);
 		expect(text).toContain("echo ");
-		const ellipses = [...text].filter(ch => ch === "…").length;
-		expect(ellipses).toBe(1);
+		expect(text).toContain("…");
 	});
 
-	it("grouped names the work instead of a bare call count (C5)", async () => {
-		settings.set("display.toolCalls", "grouped");
+	it("renders compatible same-tool calls as separate Normal rows", async () => {
 		const { controller, chatContainer } = createFixture();
 		await streamCompletion(controller, [
-			toolCall("bash", "call-1", { command: "echo one" }),
-			toolCall("bash", "call-2", { command: "echo two" }),
-			toolCall("bash", "call-3", { command: "echo three" }),
+			toolCall("bash", "call-1", { command: "echo one", i: "Inspect source files" }),
+			toolCall("bash", "call-2", { command: "echo two", i: "Inspect source files" }),
+			toolCall("bash", "call-3", { command: "echo three", i: "Inspect source files" }),
 		]);
 
-		const groups = compactGroups(chatContainer);
-		expect(groups).toHaveLength(1);
-		const collapsed = plain(groups[0]!.render(120));
-		expect(collapsed).toContain("3 shell commands");
-		expect(collapsed).not.toMatch(/\d+ tool calls?/);
+		const rows = compactRows(chatContainer);
+		expect(rows).toHaveLength(3);
+		const text = rows.map(row => plain(row.render(120))).join("\n");
+		expect(text).toContain("queued bash(echo one) — Inspect source files");
+		expect(text).toContain("queued bash(echo two) — Inspect source files");
 	});
 
-	it("grouped names every tool in a mixed-tool run, not the total (C5)", async () => {
-		settings.set("display.toolCalls", "grouped");
+	it("renders heterogeneous calls as separate Normal rows", async () => {
 		const { controller, chatContainer } = createFixture();
 		await streamCompletion(controller, [
-			toolCall("bash", "call-1", { command: "echo one" }),
-			toolCall("bash", "call-2", { command: "echo two" }),
-			toolCall("write", "call-3", { path: "out.txt", content: "hi" }),
+			toolCall("bash", "bash-1", { command: "echo source", i: "Inspect source" }),
+			toolCall("read", "read-1", { path: "/tmp/example.ts", i: "Read the implementation" }),
+			toolCall("eval", "eval-1", { language: "js", code: "1+1", i: "Check the expression" }),
+			toolCall("grep", "grep-1", { pattern: "needle", path: "/tmp/hay", i: "Find the reference" }),
 		]);
 
-		const text = plain(compactGroups(chatContainer)[0]!.render(120));
-		expect(text).toContain("2 shell commands");
-		expect(text).toContain("1 file written");
-		expect(text).not.toMatch(/3 tool calls?/);
+		const rows = compactRows(chatContainer);
+		expect(rows).toHaveLength(4);
+		expect(chatContainer.children.filter(child => child instanceof ReadToolGroupComponent)).toHaveLength(0);
+		const text = rows.map(row => plain(row.render(120))).join("\n");
+		expect(text).toContain("Inspect source");
+		expect(text).toContain("Read the implementation");
+		expect(text).toContain("Check the expression");
+		expect(text).toContain("Find the reference");
 	});
 
-	it("grouped merges two consecutive assistant messages whose tool calls are not interrupted by anything visible (Defect 1)", async () => {
-		settings.set("display.toolCalls", "grouped");
+	it("keeps tool-only assistant messages in separate rows until each result settles", async () => {
 		const { controller, chatContainer } = createFixture();
-		await streamCompletion(controller, [toolCall("bash", "call-1", { command: "echo one" })]);
-		await streamCompletion(controller, [toolCall("bash", "call-2", { command: "echo two" })]);
+		await streamCompletion(controller, [toolCall("bash", "call-1", { command: "echo one", i: "Inspect source" })]);
+		await streamCompletion(controller, [toolCall("bash", "call-2", { command: "echo two", i: "Inspect source" })]);
 
-		const groups = compactGroups(chatContainer);
-		expect(groups).toHaveLength(1);
-		expect(groups[0]!.size).toBe(2);
+		const rows = compactRows(chatContainer);
+		expect(rows).toHaveLength(2);
+		expect(rows[0]!.isTranscriptBlockFinalized()).toBe(false);
+
+		await controller.handleEvent({
+			type: "tool_execution_end",
+			toolCallId: "call-1",
+			toolName: "bash",
+			result: { content: [{ type: "text", text: "done" }] },
+			isError: false,
+		} as AgentSessionEvent);
+
+		expect(rows[0]!.isTranscriptBlockFinalized()).toBe(true);
+		expect(rows[1]!.isTranscriptBlockFinalized()).toBe(false);
 	});
 
-	it("grouped starts a fresh group after visible assistant content breaks the run", async () => {
-		settings.set("display.toolCalls", "grouped");
+	it("settles a compact row after its streamed provisional id becomes final", async () => {
 		const { controller, chatContainer } = createFixture();
-		await streamCompletion(controller, [toolCall("bash", "call-1", { command: "echo one" })]);
-		await streamCompletion(controller, [
-			thinking("Now checking something else"),
-			toolCall("bash", "call-2", { command: "echo two" }),
+		const provisional = assistantMessage([toolCall("bash", "provisional-id", { command: "echo one" })]);
+		await controller.handleEvent({ type: "message_start", message: provisional } as AgentSessionEvent);
+		await controller.handleEvent({ type: "message_update", message: provisional } as AgentSessionEvent);
+
+		const finalized = assistantMessage([toolCall("bash", "final-id", { command: "echo one" })]);
+		await controller.handleEvent({
+			type: "tool_execution_end",
+			toolCallId: "final-id",
+			toolName: "bash",
+			result: { content: [{ type: "text", text: "done" }] },
+			isError: false,
+		} as AgentSessionEvent);
+		await controller.handleEvent({ type: "message_update", message: finalized } as AgentSessionEvent);
+
+		const rows = compactRows(chatContainer);
+		expect(rows).toHaveLength(1);
+		expect(rows[0]!.isTranscriptBlockFinalized()).toBe(true);
+	});
+
+	it("retains the provisional row and adopts a final row that already settled", async () => {
+		const { controller, chatContainer, ctx } = createFixture();
+		const provisional = assistantMessage([toolCall("bash", "provisional-id", { command: "echo provisional" })]);
+		await controller.handleEvent({ type: "message_start", message: provisional } as AgentSessionEvent);
+		await controller.handleEvent({ type: "message_update", message: provisional } as AgentSessionEvent);
+		const provisionalRow = compactRows(chatContainer)[0]!;
+
+		await controller.handleEvent({
+			type: "tool_execution_start",
+			toolCallId: "final-id",
+			toolName: "bash",
+			args: { command: "echo authoritative" },
+			intent: "Inspect authoritative source",
+		} as AgentSessionEvent);
+		await controller.handleEvent({
+			type: "tool_execution_end",
+			toolCallId: "final-id",
+			toolName: "bash",
+			result: { content: [{ type: "text", text: "AUTHORITATIVE_RESULT" }] },
+			isError: false,
+		} as AgentSessionEvent);
+
+		const finalized = assistantMessage([toolCall("bash", "final-id", { command: "echo authoritative" })]);
+		await controller.handleEvent({ type: "message_update", message: finalized } as AgentSessionEvent);
+
+		const rows = compactRows(chatContainer);
+		expect(rows).toHaveLength(1);
+		expect(rows[0]).toBe(provisionalRow);
+		expect(rows[0]!.isTranscriptBlockFinalized()).toBe(true);
+		expect(ctx.pendingTools.size).toBe(0);
+		expect(plain(provisionalRow.render(120))).toContain("echo authoritative");
+		expect(plain(provisionalRow.render(120))).toContain("Inspect authoritative source");
+		provisionalRow.setExpanded(true);
+		expect(plain(provisionalRow.render(120))).toContain("AUTHORITATIVE_RESULT");
+	});
+
+	it("keeps [P(A), B] ordered as [F(A), B] when final execution starts first", async () => {
+		const { controller, chatContainer, ctx } = createFixture();
+		const provisional = assistantMessage([
+			toolCall("bash", "provisional-id", { command: "echo provisional-A" }),
+			toolCall("bash", "b-id", { command: "echo B" }),
 		]);
+		await controller.handleEvent({ type: "message_start", message: provisional } as AgentSessionEvent);
+		await controller.handleEvent({ type: "message_update", message: provisional } as AgentSessionEvent);
+		const provisionalRow = compactRows(chatContainer)[0]!;
+		const siblingRow = compactRows(chatContainer)[1]!;
 
-		expect(compactGroups(chatContainer)).toHaveLength(2);
-	});
-
-	it("grouped closes the run on a user message, even mid-turn (Defect 1)", async () => {
-		settings.set("display.toolCalls", "grouped");
-		const { controller, chatContainer } = createFixture();
-		await streamCompletion(controller, [toolCall("bash", "call-1", { command: "echo one" })]);
-		await sendUserMessage(controller, "actually, do this instead");
-		await streamCompletion(controller, [toolCall("bash", "call-2", { command: "echo two" })]);
-
-		expect(compactGroups(chatContainer)).toHaveLength(2);
-	});
-
-	it("grouped joins a collapsible read call into the compact group like any other call", async () => {
-		settings.set("display.toolCalls", "grouped");
-		const { controller, chatContainer } = createFixture();
-		await streamCompletion(controller, [toolCall("read", "read-1", { path: "/tmp/example.ts" })]);
-
-		const readGroups = chatContainer.children.filter(child => child instanceof ReadToolGroupComponent);
-		expect(readGroups).toHaveLength(0);
-		const groups = compactGroups(chatContainer);
-		expect(groups).toHaveLength(1);
-		expect(groups[0]!.size).toBe(1);
-	});
-
-	it("grouped keeps a read call in the same group as surrounding bash calls", async () => {
-		settings.set("display.toolCalls", "grouped");
-		const { controller, chatContainer } = createFixture();
-		await streamCompletion(controller, [toolCall("bash", "call-1", { command: "echo one" })]);
-		await streamCompletion(controller, [toolCall("read", "read-1", { path: "/tmp/example.ts" })]);
-		await streamCompletion(controller, [toolCall("bash", "call-2", { command: "echo two" })]);
-
-		const groups = compactGroups(chatContainer);
-		expect(groups).toHaveLength(1);
-		expect(groups[0]!.size).toBe(3);
-	});
-
-	it("grouped names bash, read, eval, and grep in one mixed run, with no Called-once fallback for a built-in (C5)", async () => {
-		settings.set("display.toolCalls", "grouped");
-		const { controller, chatContainer } = createFixture();
-		await streamCompletion(controller, [
-			toolCall("bash", "call-1", { command: "echo one" }),
-			toolCall("bash", "call-2", { command: "echo two" }),
-			toolCall("read", "read-1", { path: "/tmp/example.ts" }),
-			toolCall("eval", "eval-1", { language: "js", code: "1+1" }),
-			toolCall("grep", "grep-1", { pattern: "needle", path: "/tmp/hay" }),
+		await controller.handleEvent({
+			type: "tool_execution_start",
+			toolCallId: "final-id",
+			toolName: "bash",
+			args: { command: "echo authoritative-A" },
+			intent: "Inspect action A",
+		} as AgentSessionEvent);
+		const finalized = assistantMessage([
+			toolCall("bash", "final-id", { command: "echo authoritative-A" }),
+			toolCall("bash", "b-id", { command: "echo B" }),
 		]);
+		await controller.handleEvent({ type: "message_update", message: finalized } as AgentSessionEvent);
 
-		const readGroups = chatContainer.children.filter(child => child instanceof ReadToolGroupComponent);
-		expect(readGroups).toHaveLength(0);
-		const groups = compactGroups(chatContainer);
-		expect(groups).toHaveLength(1);
-		expect(groups[0]!.size).toBe(5);
+		const rows = compactRows(chatContainer);
+		expect(rows).toHaveLength(2);
+		expect(rows[0]).toBe(provisionalRow);
+		expect(rows[1]).toBe(siblingRow);
+		expect(plain(rows[0]!.render(120))).toContain("echo authoritative-A");
+		expect(plain(rows[0]!.render(120))).toContain("Inspect action A");
+		expect(plain(rows[1]!.render(120))).toContain("echo B");
+		expect(ctx.pendingTools.get("final-id")).toBe(provisionalRow);
+		expect(ctx.pendingTools.has("provisional-id")).toBe(false);
 
-		const text = plain(groups[0]!.render(120));
-		expect(text).toContain("2 shell commands");
-		expect(text).toContain("1 file read");
-		expect(text).toContain("1 eval");
-		expect(text).toContain("1 search");
-		expect(text).not.toMatch(/Called \w+ once/);
+		await controller.handleEvent({
+			type: "tool_execution_end",
+			toolCallId: "final-id",
+			toolName: "bash",
+			result: { content: [{ type: "text", text: "A_RESULT" }] },
+			isError: false,
+		} as AgentSessionEvent);
+
+		expect(provisionalRow.isTranscriptBlockFinalized()).toBe(true);
+		expect(ctx.pendingTools.has("final-id")).toBe(false);
+		expect(ctx.pendingTools.get("b-id")).toBe(siblingRow);
+	});
+
+	it("keeps an authoritative row that started before the delayed provisional stream", async () => {
+		const { controller, chatContainer, ctx } = createFixture();
+		const provisional = assistantMessage([
+			toolCall("bash", "provisional-id", { command: "echo provisional-A" }),
+			toolCall("bash", "b-id", { command: "echo B" }),
+		]);
+		await controller.handleEvent({ type: "message_start", message: provisional } as AgentSessionEvent);
+		await controller.handleEvent({
+			type: "tool_execution_start",
+			toolCallId: "final-id",
+			toolName: "bash",
+			args: { command: "echo authoritative-A" },
+			intent: "Inspect action A",
+		} as AgentSessionEvent);
+		const authoritativeRow = compactRows(chatContainer)[0]!;
+
+		await controller.handleEvent({ type: "message_update", message: provisional } as AgentSessionEvent);
+		const siblingRow = compactRows(chatContainer).at(-1)!;
+		const finalized = assistantMessage([
+			toolCall("bash", "final-id", { command: "echo authoritative-A" }),
+			toolCall("bash", "b-id", { command: "echo B" }),
+		]);
+		await controller.handleEvent({ type: "message_update", message: finalized } as AgentSessionEvent);
+
+		let rows = compactRows(chatContainer);
+		expect(rows).toEqual([authoritativeRow, siblingRow]);
+		expect(ctx.pendingTools.get("final-id")).toBe(authoritativeRow);
+		expect(ctx.pendingTools.has("provisional-id")).toBe(false);
+
+		await controller.handleEvent({
+			type: "tool_execution_end",
+			toolCallId: "final-id",
+			toolName: "bash",
+			result: { content: [{ type: "text", text: "AUTHORITATIVE_RESULT" }] },
+			isError: false,
+		} as AgentSessionEvent);
+
+		rows = compactRows(chatContainer);
+		expect(rows).toEqual([authoritativeRow, siblingRow]);
+		expect(authoritativeRow.isTranscriptBlockFinalized()).toBe(true);
+		expect(ctx.pendingTools.has("final-id")).toBe(false);
+		authoritativeRow.setExpanded(true);
+		expect(plain(authoritativeRow.render(120))).toContain("AUTHORITATIVE_RESULT");
 	});
 
 	it("a waiting poll (hub wait) renders a human name, not a bare internal id (C6)", async () => {
@@ -482,7 +536,7 @@ describe("display.toolCalls", () => {
 		const { controller, chatContainer } = createFixture();
 		await streamCompletion(controller, [toolCall("hub", "hub-1", { op: "wait", ids: ["bg_10", "bg_11"] })]);
 
-		const text = plain(compactGroups(chatContainer)[0]!.render(120));
+		const text = plain(compactRows(chatContainer)[0]!.render(120));
 		expect(text).not.toContain("bg_10");
 		expect(text).not.toContain("bg_11");
 		expect(text).toContain("2 jobs");
@@ -493,7 +547,7 @@ describe("display.toolCalls", () => {
 		const { controller, chatContainer } = createFixture();
 		await streamCompletion(controller, [toolCall("hub", "hub-1", { op: "wait", from: "CompactRows" })]);
 
-		const text = plain(compactGroups(chatContainer)[0]!.render(120));
+		const text = plain(compactRows(chatContainer)[0]!.render(120));
 		expect(text).toContain("CompactRows");
 		expect(text).not.toContain("op=");
 	});
@@ -505,7 +559,7 @@ describe("display.toolCalls", () => {
 			toolCall("ask", "ask-1", { questions: [{ id: "q1", question: "JWT or session cookies?", options: [] }] }),
 		]);
 
-		const text = plain(compactGroups(chatContainer)[0]!.render(120));
+		const text = plain(compactRows(chatContainer)[0]!.render(120));
 		expect(text).toContain("JWT or session cookies?");
 		expect(text).not.toContain("questions=");
 		expect(text).not.toContain("[1 items]");
@@ -523,35 +577,37 @@ describe("display.toolCalls", () => {
 			}),
 		]);
 
-		const text = plain(compactGroups(chatContainer)[0]!.render(120));
+		const text = plain(compactRows(chatContainer)[0]!.render(120));
 		expect(text).toContain("2 questions");
 		expect(text).not.toMatch(/\[2 items\]/);
 	});
 });
 
 describe("CompactToolCallComponent", () => {
-	it("renders `Tool(primary argument)` with no status word or byte count", () => {
+	it("renders an explicit done state without incidental byte counts", () => {
 		const component = new CompactToolCallComponent();
 		component.addCall("call-1", "bash", "Bash", { command: "ls -la" }, undefined);
 		component.setExecutionStarted("call-1");
 		component.updateResult({ content: [{ type: "text", text: "a.txt\nb.txt\n" }], isError: false }, false, "call-1");
 
 		const text = plain(component.render(120));
-		expect(text).toContain("Bash(ls -la)");
-		expect(text).not.toMatch(/\bok\b/);
+		expect(text).toContain("done Bash(ls -la)");
 		expect(text).not.toMatch(/\d+\s*B\b/);
 	});
 
-	it("shows a live duration only while the call is running; a settled ordinary call carries none (C3)", () => {
+	it("renders queued, running, and done states while duration stays live-only (C3)", () => {
 		const component = new CompactToolCallComponent();
 		component.addCall("call-1", "bash", "Bash", { command: "restart gateway" }, undefined);
-		component.setExecutionStarted("call-1");
+		expect(plain(component.render(120))).toContain("queued Bash(restart gateway)");
 
+		component.setExecutionStarted("call-1");
 		const runningText = plain(component.render(120));
+		expect(runningText).toContain("running Bash(restart gateway)");
 		expect(runningText).toMatch(/\d+(\.\d+)?(ms|s)/);
 
 		component.updateResult({ content: [{ type: "text", text: "" }], isError: false }, false, "call-1");
 		const settledText = plain(component.render(120));
+		expect(settledText).toContain("done Bash(restart gateway)");
 		expect(settledText).not.toMatch(/\d+(\.\d+)?(ms|s)/);
 	});
 
@@ -566,7 +622,7 @@ describe("CompactToolCallComponent", () => {
 		expect(text).toMatch(/\d+(\.\d+)?(ms|s)/);
 	});
 
-	it("a failure shows its first error line, not a status word (C3)", () => {
+	it("renders failed plus the first error line and omits the stack tail (C3)", () => {
 		const component = new CompactToolCallComponent();
 		component.addCall("call-1", "bash", "Bash", { command: "chmod 400 file" }, undefined);
 		component.updateResult(
@@ -579,6 +635,7 @@ describe("CompactToolCallComponent", () => {
 		);
 
 		const text = plain(component.render(120));
+		expect(text).toContain("failed Bash(chmod 400 file)");
 		expect(text).toContain("Permission denied");
 		expect(text).not.toContain("some stack trace the row must not show");
 	});
@@ -595,35 +652,20 @@ describe("CompactToolCallComponent", () => {
 		expect(bareText).not.toContain("(");
 	});
 
-	it("folds N calls into one collapsed group row naming the work", () => {
+	it("rejects a second generic call and finalizes after its sole result", () => {
 		const component = new CompactToolCallComponent();
 		component.addCall("call-1", "bash", "Bash", { command: "echo first" }, undefined);
-		component.addCall("call-2", "bash", "Bash", { command: "echo second" }, undefined);
-		component.addCall("call-3", "bash", "Bash", { command: "echo third" }, undefined);
-		component.updateResult({ content: [{ type: "text", text: "" }], isError: false }, false, "call-1");
-		component.updateResult({ content: [{ type: "text", text: "" }], isError: true }, false, "call-2");
 
-		const collapsed = component.render(120);
-		expect(collapsed).toHaveLength(1);
-		expect(plain(collapsed)).toContain("3 shell commands");
-	});
-
-	it("closes to new entries only once finalized — a settled-but-unfinalized group stays open (Defect 1)", () => {
-		const component = new CompactToolCallComponent();
-		component.addCall("call-1", "bash", "Bash", { command: "echo hi" }, undefined);
+		expect(() => component.addCall("call-2", "bash", "Bash", { command: "echo second" }, undefined)).toThrow(
+			"CompactToolCallComponent accepts exactly one tool call",
+		);
 		expect(component.isTranscriptBlockFinalized()).toBe(false);
 
-		component.updateResult({ content: [{ type: "text", text: "" }], isError: false }, false, "call-1");
-		// Settled, but never finalize()d: a sibling call could still join this
-		// group (the whole point of Defect 1's fix), so it is not yet
-		// transcript-finalized — mirrors ReadToolGroupComponent's own pair.
-		expect(component.isTranscriptBlockFinalized()).toBe(false);
-
-		component.finalize();
+		component.updateResult({ content: [{ type: "text", text: "done" }], isError: false }, false, "call-1");
 		expect(component.isTranscriptBlockFinalized()).toBe(true);
 	});
 
-	it("seal() forces finalized even with a call still pending", () => {
+	it("seal() finalizes an abandoned pending call", () => {
 		const component = new CompactToolCallComponent();
 		component.addCall("call-1", "bash", "Bash", { command: "echo hi" }, undefined);
 		component.seal();
@@ -631,105 +673,17 @@ describe("CompactToolCallComponent", () => {
 	});
 });
 
-describe("mountCompactToolCall / resetCompactToolGroup", () => {
-	it("compact mode finalizes its single-call group immediately; grouped mode holds it open until reset", () => {
+describe("mountCompactToolCall", () => {
+	it("mounts one admitted component for each call", () => {
 		const container = new Container();
-		const compactHolder: CompactToolGroupHolder = { current: undefined };
-		const { group: compactGroup } = mountCompactToolCall(
-			container,
-			compactHolder,
-			"compact",
-			false,
-			"call-1",
-			"bash",
-			{ command: "echo hi" },
-			undefined,
-		);
-		compactGroup.updateResult({ content: [{ type: "text", text: "" }], isError: false }, false, "call-1");
-		expect(compactGroup.isTranscriptBlockFinalized()).toBe(true);
-		expect(compactHolder.current).toBeUndefined();
+		const first = mountCompactToolCall(container, false, "call-1", "bash", { command: "echo one" }, undefined);
+		const second = mountCompactToolCall(container, false, "call-2", "bash", { command: "echo two" }, undefined);
 
-		const groupedHolder: CompactToolGroupHolder = { current: undefined };
-		const { group: groupedGroup } = mountCompactToolCall(
-			container,
-			groupedHolder,
-			"grouped",
-			false,
-			"call-2",
-			"bash",
-			{ command: "echo hi" },
-			undefined,
-		);
-		groupedGroup.updateResult({ content: [{ type: "text", text: "" }], isError: false }, false, "call-2");
-		expect(groupedGroup.isTranscriptBlockFinalized()).toBe(false);
-		expect(groupedHolder.current).toBe(groupedGroup);
-	});
-
-	it("reuses the held grouped group for as long as the holder keeps it, regardless of the container's tail", () => {
-		const container = new Container();
-		const holder: CompactToolGroupHolder = { current: undefined };
-		const { group: first } = mountCompactToolCall(
-			container,
-			holder,
-			"grouped",
-			false,
-			"call-1",
-			"bash",
-			{ command: "echo one" },
-			undefined,
-		);
-		// An unrelated child lands after it (the live path's invisible
-		// per-message placeholder) — the held group must still extend.
-		container.addChild(new Container());
-		const { group: second } = mountCompactToolCall(
-			container,
-			holder,
-			"grouped",
-			false,
-			"call-2",
-			"bash",
-			{ command: "echo two" },
-			undefined,
-		);
-		expect(second).toBe(first);
-		expect(first.size).toBe(2);
-	});
-
-	it("resetCompactToolGroup(sealed: false) closes the held group to new entries but lets a pending call keep resolving", () => {
-		const container = new Container();
-		const holder: CompactToolGroupHolder = { current: undefined };
-		const { group } = mountCompactToolCall(
-			container,
-			holder,
-			"grouped",
-			false,
-			"call-1",
-			"bash",
-			{ command: "echo hi" },
-			undefined,
-		);
-		resetCompactToolGroup(holder, false);
-		expect(holder.current).toBeUndefined();
-		expect(group.isTranscriptBlockFinalized()).toBe(false); // still has its one pending call
-		group.updateResult({ content: [{ type: "text", text: "" }], isError: false }, false, "call-1");
-		expect(group.isTranscriptBlockFinalized()).toBe(true); // finalize()d earlier, now settled too
-	});
-
-	it("resetCompactToolGroup(sealed: true) forces the held group finalized even with a call still pending", () => {
-		const container = new Container();
-		const holder: CompactToolGroupHolder = { current: undefined };
-		const { group } = mountCompactToolCall(
-			container,
-			holder,
-			"grouped",
-			false,
-			"call-1",
-			"bash",
-			{ command: "echo hi" },
-			undefined,
-		);
-		resetCompactToolGroup(holder, true);
-		expect(group.isTranscriptBlockFinalized()).toBe(true);
+		expect(container.children).toEqual([first.component, second.component]);
+		expect(first.component.isTranscriptBlockFinalized()).toBe(false);
+		first.component.updateResult({ content: [{ type: "text", text: "done" }], isError: false }, false, "call-1");
+		expect(first.component.isTranscriptBlockFinalized()).toBe(true);
+		expect(second.component.isTranscriptBlockFinalized()).toBe(false);
 	});
 });
 

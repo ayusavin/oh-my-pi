@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { AssistantMessageComponent } from "@oh-my-pi/pi-coding-agent/modes/components/assistant-message";
+import { CompactToolCallComponent } from "@oh-my-pi/pi-coding-agent/modes/components/tool-call-compact";
 import {
 	TranscriptContainer,
 	type TranscriptStableRow,
@@ -791,6 +792,22 @@ describe("TranscriptContainer", () => {
 		transcript.beginReplay();
 		transcript.cancelReplay();
 		expect(transcript.peekFlushBatch(80)?.rows).toEqual(["tail", ""]);
+	});
+	it("keeps 102 sequential compact calls as independent finalized blocks", () => {
+		const transcript = new TranscriptContainer();
+		const rows: CompactToolCallComponent[] = [];
+		for (let index = 0; index < 102; index++) {
+			const row = new CompactToolCallComponent();
+			const id = `call-${index}`;
+			row.addCall(id, "bash", "Bash", { command: `echo ${index}` }, undefined);
+			row.updateResult({ content: [{ type: "text", text: "done" }], isError: false }, false, id);
+			rows.push(row);
+			transcript.addChild(row);
+		}
+
+		expect(transcript.children).toEqual(rows);
+		expect(new Set(rows).size).toBe(102);
+		expect(rows.every(row => row.isTranscriptBlockFinalized())).toBe(true);
 	});
 });
 

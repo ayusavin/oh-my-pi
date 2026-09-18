@@ -1,7 +1,7 @@
 /**
- * Contract: renderInitialMessages renders the collapsed live DISPLAY TRANSCRIPT,
- * not the LLM context. The transcript comes from
- * `session.buildTranscriptSessionContext({ collapseCompactedHistory: true })`;
+ * Contract: renderInitialMessages renders the full live display transcript by
+ * default, not the LLM context. The transcript comes from
+ * `session.buildTranscriptSessionContext({ collapseCompactedHistory: false })`;
  * `sessionManager.buildSessionContext()` — the LLM-context builder — must not be
  * consulted for display.
  *
@@ -15,7 +15,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, type Mock, vi }
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, ImageContent, Message, Usage } from "@oh-my-pi/pi-ai";
 import { kStreamingPartialJson } from "@oh-my-pi/pi-ai/utils/block-symbols";
-import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AssistantMessageComponent } from "@oh-my-pi/pi-coding-agent/modes/components/assistant-message";
 import { TranscriptContainer } from "@oh-my-pi/pi-coding-agent/modes/components/transcript-container";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
@@ -228,7 +228,7 @@ function makeRenderCtx(
 }
 
 describe("UiHelpers.renderInitialMessages — transcript source", () => {
-	it("renders the collapsed live display transcript, never the LLM context", async () => {
+	it("renders the full live display transcript by default, never the LLM context", async () => {
 		await Settings.init({ inMemory: true });
 		const { ctx, transcriptSpy, llmContextSpy, renderSessionContextSpy } = makeCtx();
 		const transcript = makeEmptyContext();
@@ -236,11 +236,37 @@ describe("UiHelpers.renderInitialMessages — transcript source", () => {
 
 		await new UiHelpers(ctx).renderInitialMessages();
 
-		expect(transcriptSpy).toHaveBeenCalledWith({ collapseCompactedHistory: true });
+		expect(transcriptSpy).toHaveBeenCalledWith({ collapseCompactedHistory: false });
 		expect(llmContextSpy).not.toHaveBeenCalled();
 		expect(renderSessionContextSpy).toHaveBeenCalledWith(transcript, {
 			updateFooter: true,
 		});
+	});
+
+	it("renders pre-compaction history, the summary divider, and post-compaction history in order by default", async () => {
+		const transcript = transcriptWith([
+			{ role: "user", content: "PRE_COMPACTION_HISTORY", timestamp: 1 } as AgentMessage,
+			{
+				role: "compactionSummary",
+				summary: "COMPACTION_SUMMARY",
+				tokensBefore: 100,
+				tokensAfter: 10,
+				timestamp: 2,
+			} as AgentMessage,
+			{ role: "user", content: "POST_COMPACTION_HISTORY", timestamp: 3 } as AgentMessage,
+		]);
+		const { ctx } = makeRenderCtx(transcript);
+
+		await new UiHelpers(ctx).renderInitialMessages();
+
+		const rendered = Bun.stripANSI(ctx.chatContainer.render(120).join("\n"));
+		const pre = rendered.indexOf("PRE_COMPACTION_HISTORY");
+		const summary = rendered.indexOf("compacted");
+		const post = rendered.indexOf("POST_COMPACTION_HISTORY");
+		expect(settings.get("display.collapseCompacted")).toBe(false);
+		expect(pre).toBeGreaterThanOrEqual(0);
+		expect(summary).toBeGreaterThan(pre);
+		expect(post).toBeGreaterThan(summary);
 	});
 });
 

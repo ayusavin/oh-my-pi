@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
-import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { ReadToolGroupComponent } from "@oh-my-pi/pi-coding-agent/modes/components/read-tool-group";
 import { ToolExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components/tool-execution";
 import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
@@ -61,6 +61,7 @@ describe("issue #6516 — tool output appears twice", () => {
 		resetSettingsForTest();
 		settingsDir = TempDir.createSync("@pi-issue-6516-settings-");
 		await Settings.init({ inMemory: true, cwd: settingsDir.path() });
+		settings.set("display.toolCalls", "full");
 		authStorage = await AuthStorage.create(":memory:");
 		modelRegistry = new ModelRegistry(authStorage);
 	});
@@ -77,11 +78,12 @@ describe("issue #6516 — tool output appears twice", () => {
 		tempDir = TempDir.createSync("@pi-issue-6516-");
 		const model = modelRegistry.find("anthropic", "claude-sonnet-4-5");
 		if (!model) throw new Error("Expected claude-sonnet-4-5 test model");
-
+		const sessionSettings = Settings.isolated();
+		sessionSettings.set("display.toolCalls", "full");
 		session = new AgentSession({
 			agent: new Agent({ initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] } }),
 			sessionManager: SessionManager.create(tempDir.path(), tempDir.path()),
-			settings: Settings.isolated(),
+			settings: sessionSettings,
 			modelRegistry,
 		});
 		mode = new InteractiveMode(session, "test");

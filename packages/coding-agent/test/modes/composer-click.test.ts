@@ -1,11 +1,11 @@
 import { beforeAll, describe, expect, it } from "bun:test";
-import { COMPOSER_DEFAULTS, Composer, resolveHistoryRowTarget } from "../../src/modes/composer";
+import { COMPOSER_DEFAULTS, Composer } from "../../src/modes/composer";
 import { TranscriptContainer } from "../../src/modes/components/transcript-container";
 import { initTheme } from "../../src/modes/theme/theme";
 import { Container, type Component } from "@oh-my-pi/pi-tui";
 import { VirtualTerminal } from "../../../tui/test/virtual-terminal";
 import { routeViewportClick, routeViewportClickAction, type ViewportClickSpan } from "../../src/modes/composer";
-import { type CompactToolGroupHolder, mountCompactToolCall } from "../../src/modes/components/tool-call-compact";
+import { CompactToolCallComponent } from "../../src/modes/components/tool-call-compact";
 
 function span(start: number, end: number, ids: string[]): ViewportClickSpan {
 	return { start, end, candidates: () => ids };
@@ -262,173 +262,64 @@ describe("composer click-to-toggle through a real renderFrame", () => {
 		initTheme();
 	});
 
-	// Regression: `renderFrame`'s `shift()` used to rebuild every clipped/
-	// repositioned span without copying its `action` — every click-to-toggle
-	// row (a compact tool group, a settled single-call row) silently lost its
-	// action once `renderFrame` ran, even though `getViewportClickAction()`
-	// itself was correct. `viewportClickAction` only ever reads `#lastClickSpans`,
-	// which `renderFrame` always rebuilds through `shift()` — so this exercises
-	// the real production `renderFrame` pass, not a hand-built span.
-	it("a rendered CompactToolCallComponent group's click action survives renderFrame's clipping and toggles the row", () => {
+	function settledCompactRow(id: string, command: string): CompactToolCallComponent {
+		const row = new CompactToolCallComponent();
+		row.addCall(id, "bash", "Bash", { command, i: "Inspect source" }, undefined);
+		row.updateResult({ content: [{ type: "text", text: `${id} output` }], isError: false }, false, id);
+		return row;
+	}
+
+	it("preserves a compact row click action through renderFrame clipping", () => {
 		const term = new VirtualTerminal(80, 24);
 		const composer = new Composer({ terminal: term, preferences: { ...COMPOSER_DEFAULTS, quiet: true } });
 		composer.start();
 		try {
 			const transcript = new TranscriptContainer();
-			const holder: CompactToolGroupHolder = { current: undefined };
-			mountCompactToolCall(
-				transcript,
-				holder,
-				"grouped",
-				false,
-				"call-1",
-				"bash",
-				{ command: "echo one" },
-				undefined,
-			);
-			mountCompactToolCall(
-				transcript,
-				holder,
-				"grouped",
-				false,
-				"call-2",
-				"bash",
-				{ command: "echo two" },
-				undefined,
-			);
+			const first = settledCompactRow("call-1", "echo one");
+			const second = settledCompactRow("call-2", "echo two");
+			transcript.addChild(first);
+			transcript.addChild(second);
 			composer.setRuntimeChildren([transcript]);
 
 			const frame = composer.renderFrame({ columns: 80, rows: 24 });
-			const groupRow = frame.viewport.findIndex(line => line.includes("shell command"));
-			expect(groupRow).toBeGreaterThanOrEqual(0);
-			expect(Bun.stripANSI(frame.viewport[groupRow]!)).toContain("2 shell commands");
+			const firstRow = frame.viewport.findIndex(line => Bun.stripANSI(line).includes("Bash(echo one)"));
+			expect(firstRow).toBeGreaterThanOrEqual(0);
 
-			const action = composer.viewportClickAction(groupRow);
+			const action = composer.viewportClickAction(firstRow);
 			expect(action).toBeDefined();
-			action!(groupRow);
+			action!(firstRow);
 
 			const expanded = Bun.stripANSI(composer.renderFrame({ columns: 80, rows: 24 }).viewport.join("\n"));
-			expect(expanded).toContain("echo one");
-			expect(expanded).toContain("echo two");
-
-			// A second click collapses it back (C7).
-			composer.viewportClickAction(groupRow)!(groupRow);
-			const collapsed = Bun.stripANSI(composer.renderFrame({ columns: 80, rows: 24 }).viewport.join("\n"));
-			expect(collapsed).toContain("2 shell commands");
-			expect(collapsed).not.toContain("echo one");
+			expect(expanded).toContain("call-1 output");
+			expect(expanded).toContain("Bash(echo two)");
 		} finally {
 			composer.stop();
 		}
 	});
 
-	it("maps only a committed compact parent row to its stable target", () => {
+	it("routes a compact parent action through shifted Composer spans to only its selected call", () => {
 		const term = new VirtualTerminal(80, 24);
 		const composer = new Composer({ terminal: term, preferences: { ...COMPOSER_DEFAULTS, quiet: true } });
 		composer.start();
 		try {
 			const transcript = new TranscriptContainer();
-			const holder: CompactToolGroupHolder = { current: undefined };
-			mountCompactToolCall(
-				transcript,
-				holder,
-				"grouped",
-				false,
-				"call-1",
-				"bash",
-				{ command: "echo one" },
-				undefined,
-			);
-			mountCompactToolCall(
-				transcript,
-				holder,
-				"grouped",
-				false,
-				"call-2",
-				"bash",
-				{ command: "echo two" },
-				undefined,
-			);
-			const group = holder.current!;
-			group.seal();
-			transcript.addChild(new CountingBlock(["filler"]));
-			composer.setRuntimeChildren([transcript]);
-
-			const frame = composer.renderFrame({ columns: 80, rows: 1 });
-			const target = group.historyRowTarget(0);
-			expect(target).toBeDefined();
-			expect(frame.history?.targets?.[0]).toBe(target);
-			expect(frame.history?.targets?.[1]).toBeUndefined();
-			expect(resolveHistoryRowTarget(target!)).toBe(group);
-
-			group.toggleExpanded();
-			const expanded = group.render(80);
-			expect(expanded.length).toBeGreaterThan(1);
-			for (let local = 1; local < expanded.length; local++) {
-				expect(group.historyRowTarget(local)).toBeUndefined();
-			}
-		} finally {
-			composer.stop();
-		}
-	});
-
-	// Regression: the viewport click action composes the group's span-local
-	// offset when the group starts below viewport row 0. Only the parent row
-	// toggles the group; its rendered tool cards do not handle clicks.
-	it("toggles from a parent row below viewport row 0 and ignores clicks on its cards", () => {
-		const term = new VirtualTerminal(80, 24);
-		const composer = new Composer({ terminal: term, preferences: { ...COMPOSER_DEFAULTS, quiet: true } });
-		composer.start();
-		try {
-			const transcript = new TranscriptContainer();
-			const holder: CompactToolGroupHolder = { current: undefined };
-			mountCompactToolCall(
-				transcript,
-				holder,
-				"grouped",
-				false,
-				"call-1",
-				"bash",
-				{ command: "echo one" },
-				undefined,
-			);
-			mountCompactToolCall(
-				transcript,
-				holder,
-				"grouped",
-				false,
-				"call-2",
-				"bash",
-				{ command: "echo two" },
-				undefined,
-			);
-			const group = holder.current!;
-			group.updateResult({ content: [{ type: "text", text: "out one" }], isError: false }, false, "call-1");
-			group.updateResult({ content: [{ type: "text", text: "out two" }], isError: false }, false, "call-2");
-			// Padding rows ahead of the transcript push the group's span below viewport row 0.
+			const first = settledCompactRow("shifted-1", "echo shifted-one");
+			const second = settledCompactRow("shifted-2", "echo shifted-two");
+			transcript.addChild(first);
+			transcript.addChild(second);
 			composer.setRuntimeChildren([new CountingBlock(["padding a", "padding b", "padding c"]), transcript]);
 
-			let frame = composer.renderFrame({ columns: 80, rows: 24 });
-			const groupRow = frame.viewport.findIndex(line => line.includes("shell command"));
-			expect(groupRow).toBeGreaterThan(0);
-			composer.viewportClickAction(groupRow)!(groupRow);
+			const frame = composer.renderFrame({ columns: 80, rows: 24 });
+			const firstRow = frame.viewport.findIndex(line => Bun.stripANSI(line).includes("Bash(echo shifted-one)"));
+			expect(firstRow).toBeGreaterThan(0);
+			const action = composer.viewportClickAction(firstRow);
+			expect(action).toBeDefined();
+			action!(Number.MAX_SAFE_INTEGER);
 
-			frame = composer.renderFrame({ columns: 80, rows: 24 });
-			let viewport = Bun.stripANSI(frame.viewport.join("\n"));
-			expect(viewport).toContain("out one");
-			expect(viewport).toContain("out two");
-
-			const call2Row = frame.viewport.findIndex(line => Bun.stripANSI(line).includes("echo two"));
-			expect(call2Row).toBeGreaterThan(groupRow);
-			composer.viewportClickAction(call2Row)?.(call2Row);
-
-			viewport = Bun.stripANSI(composer.renderFrame({ columns: 80, rows: 24 }).viewport.join("\n"));
-			expect(viewport).toContain("out one");
-			expect(viewport).toContain("out two");
-
-			composer.viewportClickAction(groupRow)!(groupRow);
-			viewport = Bun.stripANSI(composer.renderFrame({ columns: 80, rows: 24 }).viewport.join("\n"));
-			expect(viewport).toContain("2 shell commands");
-			expect(viewport).not.toContain("out two");
+			const expanded = Bun.stripANSI(composer.renderFrame({ columns: 80, rows: 24 }).viewport.join("\n"));
+			expect(expanded).toContain("shifted-1 output");
+			expect(expanded).toContain("Bash(echo shifted-two)");
+			expect(expanded).not.toContain("shifted-2 output");
 		} finally {
 			composer.stop();
 		}

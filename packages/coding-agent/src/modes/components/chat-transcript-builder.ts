@@ -30,7 +30,6 @@ import {
 import { type TranscriptEntry, transcriptEntryMessage } from "../../session/session-context";
 import { theme } from "../theme/theme";
 import {
-	assistantHasScreenVisibleContent,
 	assistantHasVisibleContent,
 	assistantUsageIsBilled,
 	buildAsyncResultBlock,
@@ -58,8 +57,8 @@ import { EvalExecutionComponent } from "./eval-execution";
 import { type LateDiagnosticsFile, LateDiagnosticsMessageComponent } from "./late-diagnostics-message";
 import { groupedReadUsageCallIds, ReadToolGroupComponent, readArgsCollapseIntoGroup } from "./read-tool-group";
 import { SkillMessageComponent } from "./skill-message";
-import { type CompactToolCallComponent, compactToolCallMode, type CompactToolGroupHolder, mountCompactToolCall, resetCompactToolGroup } from "./tool-call-compact";
-import { ToolExecutionComponent } from "./tool-execution";
+import { type CompactToolCallComponent, compactToolCallMode, mountCompactToolCall } from "./tool-call-compact";
+import { ToolExecutionComponent, toolRenderName } from "./tool-execution";
 import { TranscriptContainer } from "./transcript-container";
 import { createUsageRowBlock, turnElapsedMs } from "./usage-row";
 import { CollapsedSyntheticMessageComponent, UserMessageComponent } from "./user-message";
@@ -92,7 +91,6 @@ export class ChatTranscriptBuilder {
 	#pendingTools = new Map<string, ToolExecutionComponent | ReadToolGroupComponent | CompactToolCallComponent>();
 	#readArgs = new Map<string, Record<string, unknown>>();
 	#readGroup: ReadToolGroupComponent | null = null;
-	#toolGroup: CompactToolGroupHolder = { current: undefined };
 	#pendingUsage: Usage | undefined;
 	#pendingUsageDuration: number | undefined;
 	#pendingUsageTtft: number | undefined;
@@ -158,7 +156,6 @@ export class ChatTranscriptBuilder {
 		this.#pendingTools.clear();
 		this.#readArgs.clear();
 		this.#readGroup = null;
-		this.#toolGroup = { current: undefined };
 		this.#pendingUsage = undefined;
 		this.#pendingUsageDuration = undefined;
 		this.#pendingUsageTtft = undefined;
@@ -255,7 +252,6 @@ export class ChatTranscriptBuilder {
 		if (!usageAttached) {
 			this.#readGroup?.seal();
 			this.#readGroup = null;
-			resetCompactToolGroup(this.#toolGroup, true);
 			this.container.addChild(
 				createUsageRowBlock(
 					this.#pendingUsage,
@@ -279,7 +275,6 @@ export class ChatTranscriptBuilder {
 		if (message.role !== "assistant" && message.role !== "toolResult") {
 			this.#readGroup?.seal();
 			this.#readGroup = null;
-			resetCompactToolGroup(this.#toolGroup, true);
 		}
 		switch (message.role) {
 			case "assistant":
@@ -421,9 +416,6 @@ export class ChatTranscriptBuilder {
 			this.#readGroup?.seal();
 			this.#readGroup = null;
 		}
-		if (assistantHasScreenVisibleContent(message, hideThinkingBlock)) {
-			resetCompactToolGroup(this.#toolGroup, true);
-		}
 
 		const errorPresentation = resolveAssistantErrorPresentation(message);
 		const hasErrorStop = errorPresentation.kind === "full";
@@ -447,15 +439,15 @@ export class ChatTranscriptBuilder {
 
 		for (const content of message.content) {
 			if (content.type !== "toolCall") continue;
+			const tool = this.deps.getTool?.(content.name);
+			const renderToolName = toolRenderName(content.name, tool);
 			this.#resolveWaitingPoll(content.name);
 
 			const afterToolSegment = timeline.afterToolCalls.get(content.id);
 			const toolCallDisplay = compactToolCallMode(settings.get("display.toolCalls"));
-			// `display.toolCalls: compact`/`grouped` folds a collapsible read into
-			// the same compact group as any other call; `ReadToolGroupComponent`
-			// stays the `full`-mode path only.
+			// Compact mode renders every read as its own Normal row.
+			// `ReadToolGroupComponent` stays on the full-mode path only.
 			if (content.name === "read" && readArgsCollapseIntoGroup(content.arguments) && !toolCallDisplay) {
-				resetCompactToolGroup(this.#toolGroup, true);
 				if (hasErrorStop && errorMessage) {
 					const group = this.#ensureReadGroup();
 					group.updateArgs(content.arguments, content.id);
@@ -480,9 +472,18 @@ export class ChatTranscriptBuilder {
 			this.#readGroup = null;
 
 			if (toolCallDisplay) {
-				const { group, pending } = mountCompactToolCall(this.container, this.#toolGroup, toolCallDisplay, this.#expanded, content.id, content.name, content.arguments, this.deps.getTool?.(content.name), hasErrorStop && errorMessage ? errorMessage : undefined);
-				this.#trackExpandable(group);
-				if (pending) this.#pendingTools.set(content.id, group);
+				const { component, pending } = mountCompactToolCall(
+					this.container,
+					this.#expanded,
+					content.id,
+					renderToolName,
+					content.arguments,
+					tool,
+					undefined,
+					hasErrorStop && errorMessage ? errorMessage : undefined,
+				);
+				this.#trackExpandable(component);
+				if (pending) this.#pendingTools.set(content.id, component);
 				appendAssistantSegment(afterToolSegment);
 				continue;
 			}

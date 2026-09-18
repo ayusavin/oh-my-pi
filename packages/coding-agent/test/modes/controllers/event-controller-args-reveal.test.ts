@@ -43,6 +43,7 @@ function makeStreamingMessage(content: AssistantMessage["content"]): AssistantMe
 }
 
 function createFixture(streamingMessage: AssistantMessage, tool?: AgentTool) {
+	settings.set("display.toolCalls", "full");
 	const pendingTools = new Map<string, ToolExecutionComponent>();
 	let approvalWaiter: ((toolCallId: string) => Promise<void>) | undefined;
 	const extensionRunner = {

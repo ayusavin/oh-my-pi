@@ -12,7 +12,7 @@
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
-import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import {
 	ToolExecutionComponent,
 	type ToolExecutionHandle,
@@ -75,6 +75,7 @@ describe("hub waiting-poll block lifecycle", () => {
 	beforeEach(async () => {
 		resetSettingsForTest();
 		await Settings.init({ inMemory: true });
+		settings.set("display.toolCalls", "full");
 		await initTheme();
 	});
 
@@ -155,6 +156,7 @@ describe("EventController displaces consecutive waiting polls", () => {
 	beforeEach(async () => {
 		resetSettingsForTest();
 		await Settings.init({ inMemory: true });
+		settings.set("display.toolCalls", "full");
 		await initTheme();
 	});
 
@@ -388,6 +390,7 @@ describe("UiHelpers.renderSessionContext collapses repeated todo snapshots", () 
 	beforeAll(async () => {
 		resetSettingsForTest();
 		await Settings.init({ inMemory: true });
+		settings.set("display.toolCalls", "full");
 		await initTheme();
 	});
 

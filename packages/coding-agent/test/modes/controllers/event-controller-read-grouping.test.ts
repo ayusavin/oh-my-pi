@@ -33,6 +33,7 @@ const originalImageProtocol = TERMINAL.imageProtocol;
 beforeEach(async () => {
 	resetSettingsForTest();
 	await Settings.init({ inMemory: true });
+	settings.set("display.toolCalls", "full");
 });
 
 afterEach(() => {
