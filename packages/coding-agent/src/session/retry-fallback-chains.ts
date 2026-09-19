@@ -373,10 +373,9 @@ function selectorMatchKind(
 function resolveRetryFallbackAliasChainKey(
 	context: RetryFallbackResolutionContext,
 	roleHint: string,
-	currentSelector?: string,
-	currentBaseSelector?: string,
-	currentPlainSelector?: string,
-	currentPlainBaseSelector?: string,
+	current?: RetryFallbackSelector,
+	currentPlain?: RetryFallbackSelector,
+	currentModel?: Model | null,
 ): string | undefined {
 	const configuredSelector = context.getModelRole(roleHint);
 	if (!configuredSelector) return undefined;
@@ -386,19 +385,7 @@ function resolveRetryFallbackAliasChainKey(
 	for (const pattern of aliases.patterns) {
 		const parsed = parseRetryFallbackAliasSelector(pattern, context.modelLookup);
 		if (!parsed) continue;
-		if (
-			currentSelector &&
-			currentBaseSelector &&
-			!selectorMatchesCurrent(
-				parsed,
-				currentSelector,
-				currentBaseSelector,
-				currentPlainSelector,
-				currentPlainBaseSelector,
-			)
-		) {
-			continue;
-		}
+		if (current && selectorMatchKind(parsed, current, currentPlain, currentModel) === "none") continue;
 		const rolePath = pattern.rolePath ?? aliases.roles;
 		const explicitChain = rolePath.find(
 			role => Array.isArray(context.chains[role]) && (context.isExplicitChain?.(role) ?? true),
@@ -413,21 +400,13 @@ function resolveRetryFallbackAliasChainKey(
 function resolveRetryFallbackHintedChainKey(
 	context: RetryFallbackResolutionContext,
 	roleHint: string,
-	currentSelector?: string,
-	currentBaseSelector?: string,
-	currentPlainSelector?: string,
-	currentPlainBaseSelector?: string,
+	current?: RetryFallbackSelector,
+	currentPlain?: RetryFallbackSelector,
+	currentModel?: Model | null,
 ): string | undefined {
 	const hasHintedChain = Array.isArray(context.chains[roleHint]);
 	if (hasHintedChain && (context.isExplicitChain?.(roleHint) ?? true)) return roleHint;
-	const aliasChainKey = resolveRetryFallbackAliasChainKey(
-		context,
-		roleHint,
-		currentSelector,
-		currentBaseSelector,
-		currentPlainSelector,
-		currentPlainBaseSelector,
-	);
+	const aliasChainKey = resolveRetryFallbackAliasChainKey(context, roleHint, current, currentPlain, currentModel);
 	return aliasChainKey ?? (hasHintedChain ? roleHint : undefined);
 }
 
@@ -506,10 +485,9 @@ export function resolveRetryFallbackChainKey(
 		const hintedChainKey = resolveRetryFallbackHintedChainKey(
 			context,
 			roleHint,
-			currentSelector,
-			currentBaseSelector,
-			currentPlainSelector,
-			currentPlainBaseSelector,
+			parsedCurrent,
+			parsedPlainCurrent,
+			currentModel,
 		);
 		if (hintedChainKey) return hintedChainKey;
 	}

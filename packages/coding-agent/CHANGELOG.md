@@ -12,6 +12,8 @@
 
 ### Added
 
+- Retry fallback chains now accept `@role` aliases, including nested aliases and explicit thinking suffixes.
+- Added `tui.titleSpinner` (`braille` | `dots` | `line`, default `braille`) to pick the terminal-title working-state spinner glyphs alongside the existing `tui.titleState` on/off toggle.
 - Type `^` to tag a model for delegation, with atomic display-name chips and session-persisted `m1`, `m2`, … agents available to task and eval.
 - Provider login and setup support masked secret prompts; RPC rejects secret prompts rather than requesting ordinary input.
 
@@ -656,9 +658,6 @@
 - Custom `Other` answers are now applied before the Ask dialog becomes interactive again, so the next Enter is no longer discarded ([#11558](https://github.com/can1357/oh-my-pi/pull/11558) by [@schickling-assistant](https://github.com/schickling-assistant)).
 - Explicit per-model price overrides retain their configured flat rates instead of inheriting time-based pricing.
 - Fixed wrong-typed `compat.stripImageInput` in `models.yml` being silently accepted, so the documented vision opt-out is now validated like its neighbours ([#11697](https://github.com/can1357/oh-my-pi/issues/11697)).
-### Added
-
-- Retry fallback chains now accept `@role` aliases, including nested aliases and explicit thinking suffixes.
 
 ## [18.1.16] - 2026-09-09
 

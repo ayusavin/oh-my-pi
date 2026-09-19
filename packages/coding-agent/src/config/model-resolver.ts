@@ -1415,9 +1415,14 @@ export function resolveModelRoleAlias(value: string, settings?: ModelRoleLookup)
 		}
 
 		const configuredFallback = ROLE_CONFIGURED_FALLBACK[role];
-		if (configuredFallback) {
+		// `configuredOnly` fallbacks (advisor → slow) exist to borrow an
+		// explicit assignment, never the target role's own defaults.
+		if (
+			configuredFallback &&
+			(!configuredFallback.configuredOnly || settings?.getModelRole(configuredFallback.role)?.trim())
+		) {
 			resolvePattern(
-				formatModelRoleAlias(configuredFallback),
+				formatModelRoleAlias(configuredFallback.role),
 				inheritedThinkingLevel,
 				nextVisited,
 				depth + 1,
