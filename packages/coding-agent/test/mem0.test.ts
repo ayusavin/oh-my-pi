@@ -11,6 +11,8 @@ import {
 	selectMem0StandingPreferences,
 } from "@oh-my-pi/pi-coding-agent/mem0/admission";
 import { Mem0Client } from "@oh-my-pi/pi-coding-agent/mem0/client";
+import { isGlobalPreferenceMem0Memory } from "@oh-my-pi/pi-coding-agent/mem0/admission";
+import { mem0ProfileFilters } from "@oh-my-pi/pi-coding-agent/mem0/profile";
 import { deriveMem0RepositoryIdentity } from "@oh-my-pi/pi-coding-agent/mem0/identity";
 import { Mem0Outbox } from "@oh-my-pi/pi-coding-agent/mem0/outbox";
 import { mem0ProjectFilters } from "@oh-my-pi/pi-coding-agent/mem0/state";
@@ -347,6 +349,68 @@ describe("Mem0 backend", () => {
 		expect(request?.url).toBe("https://api.mem0.ai/v3/memories/add/");
 		expect(request?.headers.get("authorization")).toBe("Token test-key");
 		expect(request?.headers.get("mem0-user-id")).toBeNull();
+	});
+
+	it("paginates the list endpoint through query parameters the server actually reads", async () => {
+		const requested: string[] = [];
+		const bodies: Record<string, unknown>[] = [];
+		const fetchImpl = Object.assign(async (input: string | URL | Request, init?: RequestInit) => {
+			requested.push(String(input));
+			bodies.push(JSON.parse(String(init?.body)));
+			return new Response(JSON.stringify({ count: 225, next: null, previous: null, results: [] }), {
+				status: 200,
+				headers: { "content-type": "application/json" },
+			});
+		}, { preconnect: fetch.preconnect });
+		const client = new Mem0Client("test-key", { requestTimeoutMs: 1_000, fetchImpl });
+		await client.list(mem0ProfileFilters(MEM0_IDENTITY), { page: 2, pageSize: 200 });
+		await client.list(mem0ProfileFilters(MEM0_IDENTITY), {});
+
+		expect(requested[0]).toBe("https://api.mem0.ai/v3/memories/?page=2&page_size=200");
+		expect(requested[1]).toBe("https://api.mem0.ai/v3/memories/?page=1&page_size=100");
+		expect(bodies[0]).toEqual({
+			filters: { user_id: MEM0_USER_ID, app_id: MEM0_APP_ID, metadata: { memory_scope: "global-preference" } },
+			show_expired: false,
+		});
+		expect(bodies[0]).not.toHaveProperty("page");
+		expect(bodies[0]).not.toHaveProperty("page_size");
+	});
+
+	it("recalls standing preferences by relevance and drops a row outside this installation", async () => {
+		let url: string | undefined;
+		let body: Record<string, unknown> | undefined;
+		const ownRow = {
+			id: "33333333-3333-4333-8333-333333333333",
+			memory: "A standing preference.",
+			user_id: MEM0_USER_ID,
+			app_id: MEM0_APP_ID,
+			metadata: { memory_scope: "global-preference" },
+		};
+		const foreignAppRow = {
+			id: "55555555-5555-4555-8555-555555555555",
+			memory: "Another installation's standing fact.",
+			user_id: MEM0_USER_ID,
+			metadata: { memory_scope: "global-preference" },
+		};
+		const fetchImpl = Object.assign(async (input: string | URL | Request, init?: RequestInit) => {
+			url = String(input);
+			body = JSON.parse(String(init?.body));
+			return new Response(JSON.stringify({ results: [ownRow, foreignAppRow] }), {
+				status: 200,
+				headers: { "content-type": "application/json" },
+			});
+		}, { preconnect: fetch.preconnect });
+		const client = new Mem0Client("test-key", { requestTimeoutMs: 1_000, fetchImpl });
+		const response = await client.search("how should I write commits", mem0ProfileFilters(MEM0_IDENTITY), 8);
+
+		// top_k is only honoured inside the body; as a query parameter the server returns its own default.
+		expect(url).toBe("https://api.mem0.ai/v3/memories/search/");
+		expect(body).toMatchObject({
+			filters: { user_id: MEM0_USER_ID, app_id: MEM0_APP_ID, metadata: { memory_scope: "global-preference" } },
+			top_k: 8,
+		});
+		expect(response.results.map(memory => memory.id)).toEqual([ownRow.id, foreignAppRow.id]);
+		expect(response.results.filter(memory => isGlobalPreferenceMem0Memory(memory)).map(memory => memory.id)).toEqual([ownRow.id]);
 	});
 
 	it("scopes every project search to this agent and drops rows another agent wrote", async () => {

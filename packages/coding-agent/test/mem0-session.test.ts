@@ -1,4 +1,7 @@
 import { describe, expect, it } from "bun:test";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { admitMem0Payload } from "@oh-my-pi/pi-coding-agent/mem0/admission";
 import {
@@ -8,11 +11,14 @@ import {
 	type Mem0TranscriptEntry,
 } from "@oh-my-pi/pi-coding-agent/mem0/capture";
 import { mem0AutoCaptureEnabled, mem0WritesEnabled } from "@oh-my-pi/pi-coding-agent/mem0/permissions";
+import { deriveMem0RepositoryIdentity } from "@oh-my-pi/pi-coding-agent/mem0/identity";
 import { loadMem0StandingProfile, type Mem0ProfileClient } from "@oh-my-pi/pi-coding-agent/mem0/profile";
+import { Mem0SessionState } from "@oh-my-pi/pi-coding-agent/mem0/state";
 import { renderMem0PromptContext } from "@oh-my-pi/pi-coding-agent/mem0/prompt-context";
 import { composeMem0TextRedactors } from "@oh-my-pi/pi-coding-agent/mem0/redaction-context";
 import { mem0GlobalSaveScopeError } from "@oh-my-pi/pi-coding-agent/mem0/save-scope";
 import { MEM0_APP_ID, MEM0_USER_ID, type Mem0Memory } from "@oh-my-pi/pi-coding-agent/mem0/types";
+import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { Mem0WorkScope } from "@oh-my-pi/pi-coding-agent/mem0/work";
 import { parseMemorySaveInput } from "@oh-my-pi/pi-coding-agent/memory-backend/save-input";
 
@@ -25,6 +31,34 @@ function standingPreference(id: string, memory: string, overrides: Partial<Mem0M
 		metadata: { memory_scope: "global-preference" },
 		...overrides,
 	};
+}
+
+
+const PROFILE_ROW = {
+	id: "77777777-7777-4777-8777-777777777777",
+	memory: "Reply in Russian and keep commits conventional.",
+	user_id: MEM0_USER_ID,
+	app_id: MEM0_APP_ID,
+	metadata: { memory_scope: "global-preference" },
+};
+
+/** Minimal AgentSession surface Mem0SessionState reads; the runtime session is irrelevant to prompt composition. */
+function stubSession(cwd: string, settings: Settings): { session: AgentSession; setState(state: unknown): void } {
+	let state: unknown;
+	const session = {
+		settings,
+		isDisposed: false,
+		obfuscator: undefined,
+		sessionManager: {
+			getCwd: () => cwd,
+			getSessionId: () => "session-1",
+			getBranch: () => [{ id: "entry-1" }],
+		},
+		subscribe: () => () => {},
+		getMem0SessionState: () => state,
+		emitNotice: () => {},
+	};
+	return { session: session as unknown as AgentSession, setState: value => (state = value) };
 }
 
 describe("Mem0 session runtime", () => {
@@ -115,6 +149,44 @@ describe("Mem0 session runtime", () => {
 		expect(rendered.context).toContain('<mem0_memory_status state="degraded">');
 		expect(rendered.context?.length).toBeLessThanOrEqual(512);
 		expect(rendered.context).not.toContain(completePreference.memory);
+	});
+
+	it("keeps both recall lanes inside one budget instead of letting long preferences starve project recall", () => {
+		const budget = { maxChars: 1_200, maxTokens: 300 };
+		const preferences = [
+			standingPreference("77777777-7777-4777-8777-777777777777", "P".repeat(400)),
+			standingPreference("88888888-8888-4888-8888-888888888888", "Q".repeat(400)),
+			standingPreference("99999999-9999-4999-8999-999999999999", "R".repeat(400)),
+		];
+		const project: Mem0Memory[] = [
+			{ id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", memory: "S".repeat(300), userId: MEM0_USER_ID, appId: MEM0_APP_ID, metadata: { memory_scope: "project" } },
+		];
+		const rendered = renderMem0PromptContext({ profile: preferences, profileState: { status: "ready" }, project, budget });
+
+		expect(rendered.profileOverflow).toBe(false);
+		expect(rendered.context).toContain(preferences[0]!.memory);
+		expect(rendered.context).toContain(project[0]!.memory);
+		expect(rendered.context).not.toContain(preferences[2]!.memory);
+		expect(rendered.context!.length).toBeLessThanOrEqual(budget.maxChars);
+		expect(Math.ceil(rendered.context!.length / 4)).toBeLessThanOrEqual(budget.maxTokens);
+	});
+
+	it("reports overflow and still renders project recall when no single preference fits", () => {
+		const budget = { maxChars: 700, maxTokens: 175 };
+		const project: Mem0Memory[] = [
+			{ id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", memory: "A short project fact.", userId: MEM0_USER_ID, appId: MEM0_APP_ID, metadata: { memory_scope: "project" } },
+		];
+		const rendered = renderMem0PromptContext({
+			profile: [standingPreference("cccccccc-cccc-4ccc-8ccc-cccccccccccc", "T".repeat(4_000))],
+			profileState: { status: "ready" },
+			project,
+			budget,
+		});
+
+		expect(rendered.profileOverflow).toBe(true);
+		expect(rendered.context).toContain('<mem0_memory_status state="degraded">');
+		expect(rendered.context).toContain(project[0]!.memory);
+		expect(rendered.context!.length).toBeLessThanOrEqual(budget.maxChars);
 	});
 
 	it("reads write permission and automatic capture from live settings", () => {
@@ -263,5 +335,61 @@ describe("Mem0 session runtime", () => {
 				maxChars: 1_000,
 			}),
 		).toBeUndefined();
+	});
+	it("recalls both lanes for a prompt even when the full standing-profile page walk is degraded", async () => {
+		const temporaryDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-mem0-prompt-"));
+		const originalFetch = globalThis.fetch;
+		const originalKey = process.env.MEM0_API_KEY;
+		try {
+			const { repositoryId } = await deriveMem0RepositoryIdentity(temporaryDir);
+			const projectRow = {
+				id: "88888888-8888-4888-8888-888888888888",
+				memory: "The dev loop runs through the workflow script.",
+				user_id: MEM0_USER_ID,
+				app_id: MEM0_APP_ID,
+				metadata: { memory_scope: "project", repository_id: repositoryId },
+			};
+			const searchedFilters: Record<string, unknown>[] = [];
+			const searchedTopK: unknown[] = [];
+			process.env.MEM0_API_KEY = "test-key";
+			globalThis.fetch = Object.assign(async (input: string | URL | Request, init?: RequestInit) => {
+				const url = String(input);
+				const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, any>) : {};
+				// The page walk never terminates here, so the whole-profile lane stays degraded.
+				if (url.startsWith("https://api.mem0.ai/v3/memories/?")) {
+					return new Response(JSON.stringify({ count: 900, next: "https://api.mem0.ai/v3/memories/?page=2", results: [] }), { status: 200 });
+				}
+				searchedFilters.push(body.filters);
+				searchedTopK.push(body.top_k);
+				const scope = body.filters?.metadata?.memory_scope;
+				if (scope === "global-preference") return new Response(JSON.stringify({ results: [PROFILE_ROW] }), { status: 200 });
+				return new Response(JSON.stringify({ results: body.filters?.user_id ? [projectRow] : [] }), { status: 200 });
+			}, { preconnect: fetch.preconnect });
+
+			const settings = Settings.isolated({ "memory.backend": "mem0", "mem0.profilePageLimit": 1, "mem0.profileRecallLimit": 4 });
+			const { session, setState } = stubSession(temporaryDir, settings);
+			const state = await Mem0SessionState.create(session, settings, temporaryDir);
+			setState(state);
+			await state.loadStandingPreferences();
+
+			expect((await state.status()).message).toContain("degraded: standing preference profile exceeded the configured page budget");
+
+			const prepared = await state.beforeAgentStartPrompt("How do I run the dev loop?");
+			expect(prepared?.context).toContain(PROFILE_ROW.memory);
+			expect(prepared?.context).toContain(projectRow.memory);
+			expect(prepared?.context).not.toContain("mem0_memory_status");
+			expect(searchedFilters).toContainEqual({
+				user_id: MEM0_USER_ID,
+				app_id: MEM0_APP_ID,
+				metadata: { memory_scope: "global-preference" },
+			});
+			expect(searchedTopK[searchedFilters.findIndex(filters => (filters as any).metadata.memory_scope === "global-preference")]).toBe(4);
+			state.dispose();
+		} finally {
+			globalThis.fetch = originalFetch;
+			if (originalKey === undefined) delete process.env.MEM0_API_KEY;
+			else process.env.MEM0_API_KEY = originalKey;
+			await fs.rm(temporaryDir, { recursive: true, force: true });
+		}
 	});
 });

@@ -141,17 +141,15 @@ export class Mem0Client {
 		options: { page?: number; pageSize?: number; showExpired?: boolean } = {},
 		signal?: AbortSignal,
 	): Promise<Mem0ListResponse> {
+		// The list endpoint reads pagination from the query string only; the same keys in the
+		// body are ignored, which pins every page to the first 100 rows.
+		const query = new URLSearchParams({
+			page: String(Math.max(1, Math.trunc(options.page ?? 1))),
+			page_size: String(Math.max(1, Math.min(200, options.pageSize ?? 100))),
+		});
 		const body = await this.#requestJson(
-			"/v3/memories/",
-			{
-				method: "POST",
-				body: JSON.stringify({
-					filters,
-					page: options.page ?? 1,
-					page_size: Math.max(1, Math.min(200, options.pageSize ?? 100)),
-					show_expired: options.showExpired === true,
-				}),
-			},
+			`/v3/memories/?${query.toString()}`,
+			{ method: "POST", body: JSON.stringify({ filters, show_expired: options.showExpired === true }) },
 			signal,
 		);
 		const record = isRecord(body) ? body : undefined;

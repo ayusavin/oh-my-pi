@@ -57,13 +57,6 @@ function memoryEntryCharCount(memory: Mem0Memory): number {
 	return 4 + open.length + escapedMemoryCharCount(memory.memory) + MEMORY_CLOSE.length;
 }
 
-function renderedMemoriesCharCount(memories: readonly Mem0Memory[]): number | undefined {
-	if (memories.length === 0) return undefined;
-	let count = MEMORIES_OPEN.length + 1 + MEMORIES_GUIDANCE.length + 1 + MEMORIES_CLOSE.length;
-	for (const memory of memories) count += memoryEntryCharCount(memory);
-	return count;
-}
-
 function fitsBudget(charCount: number, budget: Mem0PromptBudget): boolean {
 	return charCount <= budget.maxChars && Math.ceil(charCount / 4) <= budget.maxTokens;
 }
@@ -96,38 +89,48 @@ function composedCharCount(status: string | undefined, memories: number | undefi
 
 /**
  * Render profile and project recall under one total character and approximate
- * token budget. A profile is never partially injected: overflow is explicit.
- * Project recall is fitted independently after the complete profile.
+ * token budget. Both lanes are relevance-ranked subsets, so both are fitted by
+ * rank, alternating between them: one lane of long records cannot starve the
+ * other. Overflow is reported only when no recalled preference fits at all.
  */
 export function renderMem0PromptContext(input: Mem0PromptContextInput): Mem0PromptContext {
 	const profile = input.profileState.status === "ready" ? uniqueMem0Memories(input.profile) : [];
 	const profileIds = new Set(profile.map(memory => memory.id));
 	const project = uniqueMem0Memories(input.project).filter(memory => !profileIds.has(memory.id));
-	let profileOverflow = false;
-	let status = input.profileState.status === "ready" ? undefined : renderProfileStatus(input.profileState.reason);
-	let includedProfile = profile;
-	let memoryChars = renderedMemoriesCharCount(includedProfile);
 
-	if (memoryChars !== undefined && !fitsBudget(composedCharCount(status, memoryChars), input.budget)) {
-		includedProfile = [];
-		memoryChars = undefined;
-		profileOverflow = true;
-		status = renderProfileStatus("The complete standing preference profile exceeds the Mem0 injection budget.");
-	}
-
-	const included = [...includedProfile];
-	for (const memory of project) {
-		const candidateChars =
-			memoryChars === undefined
-				? MEMORIES_OPEN.length + 1 + MEMORIES_GUIDANCE.length + memoryEntryCharCount(memory) + 1 + MEMORIES_CLOSE.length
-				: memoryChars + memoryEntryCharCount(memory);
-		if (fitsBudget(composedCharCount(status, candidateChars), input.budget)) {
+	const layout = (status: string | undefined): { included: Mem0Memory[]; profileCount: number } => {
+		const included: Mem0Memory[] = [];
+		let profileCount = 0;
+		let memoryChars: number | undefined;
+		const fit = (memory: Mem0Memory): boolean => {
+			const candidateChars =
+				memoryChars === undefined
+					? MEMORIES_OPEN.length + 1 + MEMORIES_GUIDANCE.length + memoryEntryCharCount(memory) + 1 + MEMORIES_CLOSE.length
+					: memoryChars + memoryEntryCharCount(memory);
+			if (!fitsBudget(composedCharCount(status, candidateChars), input.budget)) return false;
 			included.push(memory);
 			memoryChars = candidateChars;
+			return true;
+		};
+		for (let rank = 0; rank < Math.max(profile.length, project.length); rank++) {
+			const preference = profile[rank];
+			if (preference && fit(preference)) profileCount++;
+			const projectMemory = project[rank];
+			if (projectMemory) fit(projectMemory);
 		}
+		return { included, profileCount };
+	};
+
+	let status = input.profileState.status === "ready" ? undefined : renderProfileStatus(input.profileState.reason);
+	let fitted = layout(status);
+	const profileOverflow = profile.length > 0 && fitted.profileCount === 0;
+	if (profileOverflow && status === undefined) {
+		// The status costs budget of its own, so the whole block is laid out again around it.
+		status = renderProfileStatus("Every recalled standing preference exceeds the Mem0 injection budget.");
+		fitted = layout(status);
 	}
 
-	const memories = renderMemories(included);
+	const memories = renderMemories(fitted.included);
 	const context = status && memories ? `${status}\n\n${memories}` : status ?? memories;
 	return { ...(context ? { context } : {}), profileOverflow };
 }

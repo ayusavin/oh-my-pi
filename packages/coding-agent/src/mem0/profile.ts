@@ -11,6 +11,11 @@ export interface Mem0ProfileClient {
 	): Promise<Mem0ListResponse>;
 }
 
+/** The one server-side shape of the user-only standing-preference lane, shared by list and search. */
+export function mem0ProfileFilters(identity: Mem0Identity = MEM0_IDENTITY): Record<string, unknown> {
+	return { user_id: identity.userId, app_id: identity.appId, metadata: { memory_scope: "global-preference" } };
+}
+
 export type Mem0StandingProfileLoad =
 	| { status: "ready"; preferences: Mem0Memory[] }
 	| { status: "degraded"; preferences: []; reason: string };
@@ -37,7 +42,7 @@ export async function loadMem0StandingProfile(
 	const memories: Mem0Memory[] = [];
 	for (let page = 1; page <= pageLimit; page++) {
 		const response = await client.list(
-			{ user_id: identity.userId, app_id: identity.appId, metadata: { memory_scope: "global-preference" } },
+			mem0ProfileFilters(identity),
 			{ page, pageSize: MEM0_PROFILE_PAGE_SIZE, showExpired: false },
 			options.signal,
 		);

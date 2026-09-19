@@ -3267,6 +3267,7 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 	"mem0.profilePageLimit": { type: "number", default: 100 },
+	"mem0.profileRecallLimit": { type: "number", default: 8 },
 	"mem0.projectRecallLimit": { type: "number", default: 8 },
 	"mem0.injectionMaxChars": { type: "number", default: 16_000 },
 	"mem0.injectionTokenLimit": { type: "number", default: 4_000 },

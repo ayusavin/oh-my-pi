@@ -24,7 +24,7 @@ import { flushMem0Outbox } from "./dispatch";
 import { deriveMem0RepositoryIdentity, type Mem0RepositoryIdentity } from "./identity";
 import { getMem0OutboxPath, Mem0Outbox } from "./outbox";
 import { mem0AutoCaptureEnabled, mem0WritesEnabled } from "./permissions";
-import { loadMem0StandingProfile } from "./profile";
+import { loadMem0StandingProfile, mem0ProfileFilters } from "./profile";
 import { renderMem0PromptContext, type Mem0ProfilePromptState } from "./prompt-context";
 import { createMem0TextRedactor, type Mem0TextRedactor } from "./redact";
 import { composeMem0TextRedactors } from "./redaction-context";
@@ -43,6 +43,11 @@ interface Mem0OwnerSnapshot {
 interface Mem0ProjectRecall {
 	memories: Mem0Memory[];
 	message?: string;
+}
+
+interface Mem0ProfileRecall {
+	memories: Mem0Memory[];
+	unavailableReason?: string;
 }
 
 /** Exported for the test that asserts the outgoing search stays inside this agent's namespace. */
@@ -281,13 +286,14 @@ export class Mem0SessionState {
 	async #preparePrompt(caller: Mem0SessionState, promptText: string): Promise<MemoryPromptPreparation | undefined> {
 		const owner = this.#snapshot(caller);
 		if (!this.#isCurrent(caller, owner)) return undefined;
-		const profileState = await this.#profileStateForPrompt();
-		if (!this.#isCurrent(caller, owner)) return undefined;
-		const recalled = this.#client ? await this.#recallForPrompt(caller, promptText, owner) : [];
+		const [profile, recalled] = await Promise.all([
+			this.#recallStandingPreferences(caller, promptText, owner),
+			this.#client ? this.#recallForPrompt(caller, promptText, owner) : Promise.resolve([] as Mem0Memory[]),
+		]);
 		if (!this.#isCurrent(caller, owner)) return undefined;
 		const rendered = renderMem0PromptContext({
-			profile: this.#standingPreferences,
-			profileState,
+			profile: profile.memories,
+			profileState: profile.unavailableReason ? { status: "degraded", reason: profile.unavailableReason } : { status: "ready" },
 			project: recalled,
 			budget: {
 				maxChars: this.config.injectionMaxChars,
@@ -304,28 +310,33 @@ export class Mem0SessionState {
 		};
 	}
 
-	async #profileStateForPrompt(): Promise<Mem0ProfilePromptState> {
-		if (this.#profileState.status !== "loading") return this.#profileState;
-		const load = this.#profileLoad;
-		if (!load) {
-			return { status: "degraded", reason: "Standing preference profile did not start loading." };
+	/**
+	 * Recall the standing-preference lane per prompt instead of injecting the whole
+	 * profile: a complete profile outgrows any injection budget, and overflow drops
+	 * every memory from the turn.
+	 */
+	async #recallStandingPreferences(
+		caller: Mem0SessionState,
+		promptText: string,
+		owner: Mem0OwnerSnapshot,
+	): Promise<Mem0ProfileRecall> {
+		const client = this.#client;
+		if (!client) return { memories: [], unavailableReason: "Mem0 credentials are unavailable." };
+		const cleanQuery = this.#redactorFor(caller)(promptText).trim().slice(0, PROMPT_QUERY_MAX_CHARS);
+		if (!cleanQuery) return { memories: [], unavailableReason: "The prompt is empty after redaction, so no standing preference was recalled." };
+		const topK = this.config.profileRecallLimit;
+		let results: Mem0Memory[];
+		try {
+			const response = await client.search(cleanQuery, mem0ProfileFilters(this.config.identity), topK, this.#requestSignal(caller));
+			results = response.results;
+		} catch {
+			this.#degrade("standing preference recall is unavailable", caller, owner);
+			return { memories: [], unavailableReason: "Standing preference recall is unavailable for this turn." };
 		}
-		const completed = await Promise.race([
-			load.then(
-				() => true,
-				() => true,
-			),
-			Bun.sleep(this.config.startupWaitMs).then(() => false),
-		]);
-		if (!completed) {
-			return {
-				status: "loading",
-				reason: `Standing preference profile did not finish within ${this.config.startupWaitMs} ms.`,
-			};
-		}
-		return this.#profileState.status === "loading"
-			? { status: "degraded", reason: "Standing preference profile failed before reporting its result." }
-			: this.#profileState;
+		if (!this.#isCurrent(caller, owner)) return { memories: [] };
+		return {
+			memories: uniqueMem0Memories(results.filter(memory => isGlobalPreferenceMem0Memory(memory, this.config.identity))).slice(0, topK),
+		};
 	}
 
 	async #recallForPrompt(caller: Mem0SessionState, promptText: string, owner: Mem0OwnerSnapshot): Promise<Mem0Memory[]> {

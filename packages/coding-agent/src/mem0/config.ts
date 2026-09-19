@@ -8,6 +8,7 @@ export interface Mem0Config {
 	apiKeyFile?: string;
 	identity: Mem0Identity;
 	profilePageLimit: number;
+	profileRecallLimit: number;
 	projectRecallLimit: number;
 	injectionMaxChars: number;
 	injectionTokenLimit: number;
@@ -52,6 +53,7 @@ export function loadMem0Config(settings: Settings): Mem0Config {
 			appId: settings.get("mem0.appId")?.trim() || MEM0_APP_ID,
 		},
 		profilePageLimit: boundedNumber(settings.get("mem0.profilePageLimit"), 100, 1, 1_000),
+		profileRecallLimit: boundedNumber(settings.get("mem0.profileRecallLimit"), 8, 1, 32),
 		projectRecallLimit: boundedNumber(settings.get("mem0.projectRecallLimit"), 8, 1, 32),
 		injectionMaxChars: boundedNumber(settings.get("mem0.injectionMaxChars"), 16_000, 512, 200_000),
 		injectionTokenLimit: boundedNumber(settings.get("mem0.injectionTokenLimit"), 4_000, 128, 50_000),
