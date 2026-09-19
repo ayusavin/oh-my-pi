@@ -5,6 +5,7 @@ import { logger } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../config/model-registry";
 import type { Settings } from "../config/settings";
 import type { HindsightSessionState } from "../hindsight/state";
+import type { Mem0SessionState } from "../mem0/state";
 import { resolveMemoryBackend } from "../memory-backend/resolve";
 import type { MemoryBackendStartOptions } from "../memory-backend/types";
 import type { MnemopiSessionState } from "../mnemopi/state";
@@ -19,6 +20,8 @@ export interface SessionMemoryHost {
 	memoryBackendSession(): MemoryBackendStartOptions["session"];
 	getHindsightSessionState(): HindsightSessionState | undefined;
 	setHindsightSessionState(state: HindsightSessionState | undefined): void;
+	getMem0SessionState(): Mem0SessionState | undefined;
+	setMem0SessionState(state: Mem0SessionState | undefined): void;
 	getMnemopiSessionState(): MnemopiSessionState | undefined;
 	takeMnemopiSessionState(): MnemopiSessionState | undefined;
 	setBaseSystemPrompt(prompt: string[]): void;
@@ -164,6 +167,17 @@ export class SessionMemory {
 			}
 			this.#host.setHindsightSessionState(undefined);
 			hindsight.dispose();
+		}
+
+		const mem0 = this.#host.getMem0SessionState();
+		if (mem0) {
+			try {
+				await mem0.drainForDispose();
+			} catch (error) {
+				logger.warn("Memory lifecycle: Mem0 drain failed", { error: String(error) });
+			}
+			this.#host.setMem0SessionState(undefined);
+			mem0.dispose();
 		}
 
 		const mnemopi = this.#host.takeMnemopiSessionState();

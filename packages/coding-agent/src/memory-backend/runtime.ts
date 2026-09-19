@@ -41,7 +41,10 @@ export function createMemoryRuntimeContext(context: MemoryBackendOperationContex
 		async save(input: string | MemoryBackendSaveInput) {
 			if (!settings) return unavailableSave("off", "No active agent session.");
 			const backend = await resolveMemoryBackend(settings);
-			const normalized = typeof input === "string" ? { content: input } : input;
+			const normalized: MemoryBackendSaveInput = typeof input === "string" ? { content: input } : input;
+			if (normalized.scope === "global-preference" && backend.id !== "mem0") {
+				return unavailableSave(backend.id, "Global standing preferences are available only with the Mem0 backend.");
+			}
 			return backend.save
 				? await backend.save(context, normalized)
 				: unavailableSave(backend.id, `Memory save is not available for the ${backend.id} backend.`);

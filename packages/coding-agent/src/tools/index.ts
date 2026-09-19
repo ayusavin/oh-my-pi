@@ -16,6 +16,7 @@ import type { Skill } from "../extensibility/skills";
 import type { GoalModeState, GoalRuntime } from "../goals";
 import { GoalTool } from "../goals/tools/goal-tool";
 import type { HindsightSessionState } from "../hindsight/state";
+import type { Mem0SessionState } from "../mem0/state";
 import type { LocalProtocolOptions } from "../internal-urls";
 import type { DaemonCompletionNotification } from "../launch/protocol";
 import { LspTool } from "../lsp";
@@ -282,6 +283,8 @@ export interface ToolSession {
 	getSessionId?: () => string | null;
 	/** Get Hindsight runtime state for this agent session. */
 	getHindsightSessionState?: () => HindsightSessionState | undefined;
+	/** Get Mem0 runtime state for this agent session. */
+	getMem0SessionState?: () => Mem0SessionState | undefined;
 	/** Get Mnemopi runtime state for this agent session. */
 	getMnemopiSessionState?: () => MnemopiSessionState | undefined;
 	/** Agent identity used for IRC routing. Returns the registry id (e.g. "Main", "AuthLoader"). */
@@ -612,8 +615,15 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 			for (const name of ["recall", "retain", "reflect"]) {
 				if (!requestedTools.includes(name)) requestedTools.push(name);
 			}
+		} else if (session.settings.get("memory.backend") === "mem0") {
+			for (const name of ["recall", "retain"]) {
+				if (!requestedTools.includes(name)) requestedTools.push(name);
+			}
 		}
-		if (session.settings.get("memory.backend") === "mnemopi" && !requestedTools.includes("memory_edit")) {
+		if (
+			["mem0", "mnemopi"].includes(session.settings.get("memory.backend") ?? "") &&
+			!requestedTools.includes("memory_edit")
+		) {
 			requestedTools.push("memory_edit");
 		}
 		if (externalThinkingActive && !requestedTools.includes("think")) {
@@ -672,10 +682,11 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 				!restrictToolNames && session.enableIrc !== false && isIrcEnabled(session.settings, session.taskDepth ?? 0)
 			);
 		}
-		if (name === "retain" || name === "recall" || name === "reflect") {
-			return ["hindsight", "mnemopi"].includes(session.settings.get("memory.backend") ?? "");
+		if (name === "retain" || name === "recall") {
+			return ["hindsight", "mem0", "mnemopi"].includes(session.settings.get("memory.backend") ?? "");
 		}
-		if (name === "memory_edit") return session.settings.get("memory.backend") === "mnemopi";
+		if (name === "reflect") return ["hindsight", "mnemopi"].includes(session.settings.get("memory.backend") ?? "");
+		if (name === "memory_edit") return ["mem0", "mnemopi"].includes(session.settings.get("memory.backend") ?? "");
 		if (name === "manage_skill")
 			return (
 				session.settings.get("autolearn.enabled") &&

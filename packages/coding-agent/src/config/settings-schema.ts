@@ -219,7 +219,7 @@ export const TAB_GROUPS: Record<SettingTab, readonly string[]> = {
 		"Git",
 	],
 	context: ["General", "Compaction", "Rules (TTSR)", "Experimental"],
-	memory: ["General", "Auto-Learn", "Mnemopi", "Hindsight", "Sharpshooter"],
+	memory: ["General", "Auto-Learn", "Mem0", "Mnemopi", "Hindsight", "Sharpshooter"],
 	files: ["Editing", "Reading", "Read Summaries", "LSP"],
 	shell: ["Bash", "Eval & Runtimes"],
 	tools: [
@@ -3186,19 +3186,19 @@ export const SETTINGS_SCHEMA = {
 
 	"memories.summaryInjectionTokenLimit": { type: "number", default: 5000 },
 
-	// Memory backend selector — picks between local memories pipeline,
-	// Mnemopi local SQLite, Hindsight remote memory, Sharpshooter project
-	// decisions, or off. The legacy
-	// `memories.enabled` flag is migration input only; see config/settings.ts.
+	// Memory backend selector — picks between local memories pipeline, Mem0
+	// Platform, Mnemopi local SQLite, Hindsight remote memory, Sharpshooter
+	// project decisions, or off. The legacy `memories.enabled` flag is migration
+	// input only; see config/settings.ts.
 	"memory.backend": {
 		type: "enum",
-		values: ["off", "local", "hindsight", "mnemopi", "sharpshooter"] as const,
+		values: ["off", "local", "hindsight", "mem0", "mnemopi", "sharpshooter"] as const,
 		default: "off",
 		ui: {
 			tab: "memory",
 			group: "General",
 			label: "Memory Backend",
-			description: "Off, local summary pipeline, Mnemopi SQLite, Hindsight remote memory, or Sharpshooter",
+			description: "Off, local summary pipeline, Mem0 Platform, Mnemopi SQLite, Hindsight remote memory, or Sharpshooter",
 			options: [
 				{ value: "off", label: "Off", description: "No memory subsystem runs" },
 				{ value: "local", label: "Local", description: "Local rollout summarisation pipeline (memory_summary.md)" },
@@ -3214,9 +3214,60 @@ export const SETTINGS_SCHEMA = {
 					description:
 						"Friction-gated project decision files (architecture/product/style), consolidated in the background",
 				},
+				{
+					value: "mem0",
+					label: "Mem0",
+					description: "Mem0 Platform profile and project-scoped recall with a local durable outbox",
+				},
 			],
 		},
 	},
+	// Mem0 Platform. Credentials are intentionally absent from settings:
+	// resolveMem0Credential accepts MEM0_API_KEY or a trusted file path only.
+	"mem0.apiKeyFile": {
+		type: "string",
+		default: undefined,
+		ui: {
+			tab: "memory",
+			group: "Mem0",
+			label: "Mem0 API Key File",
+			description: "Path beneath the user-owned agent directory; the token is never stored in settings",
+			condition: "mem0Active",
+		},
+	},
+	"mem0.writeEnabled": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "memory",
+			group: "Mem0",
+			label: "Mem0 Writes",
+			description: "Allow scoped Mem0 mutations and terminal-turn capture",
+			condition: "mem0Active",
+		},
+	},
+	"mem0.autoCapture": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "memory",
+			group: "Mem0",
+			label: "Mem0 Terminal Capture",
+			description: "Queue admitted completed top-level turns when Mem0 writes are enabled",
+			condition: "mem0Active",
+		},
+	},
+	"mem0.profilePageLimit": { type: "number", default: 100 },
+	"mem0.projectRecallLimit": { type: "number", default: 8 },
+	"mem0.injectionMaxChars": { type: "number", default: 16_000 },
+	"mem0.injectionTokenLimit": { type: "number", default: 4_000 },
+	"mem0.requestTimeoutMs": { type: "number", default: 15_000 },
+	"mem0.startupWaitMs": { type: "number", default: 2_000 },
+	"mem0.captureMaxChars": { type: "number", default: 6_000 },
+	"mem0.toolResultMaxChars": { type: "number", default: 1_000 },
+	"mem0.toolResultAllowlist": { type: "array", default: [] as string[] },
+	"mem0.outboxMaxEntries": { type: "number", default: 512 },
+	"mem0.outboxMaxBytes": { type: "number", default: 2_000_000 },
 	"sharpshooter.model": {
 		type: "string",
 		default: undefined,

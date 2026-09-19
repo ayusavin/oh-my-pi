@@ -17,7 +17,10 @@ const memoryRetainSchema = type({
 export type MemoryRetainParams = typeof memoryRetainSchema.infer;
 export class MemoryRetainTool implements AgentTool<typeof memoryRetainSchema> {
 	readonly name = "retain";
-	readonly approval = "read" as const;
+	readonly approval = () => {
+		if (this.session.settings.get("memory.backend") === "mem0") return "write" as const;
+		return "read" as const;
+	};
 	readonly label = "Retain";
 	readonly description = retainDescription;
 	readonly parameters = memoryRetainSchema;
@@ -29,13 +32,36 @@ export class MemoryRetainTool implements AgentTool<typeof memoryRetainSchema> {
 
 	static createIf(session: ToolSession): MemoryRetainTool | null {
 		const backend = session.settings.get("memory.backend");
-		if (backend !== "hindsight" && backend !== "mnemopi") return null;
+		if (backend !== "hindsight" && backend !== "mem0" && backend !== "mnemopi") return null;
 		if (backend === "hindsight" && !isHindsightConfigured(loadHindsightConfig(session.settings))) return null;
 		return new MemoryRetainTool(session);
 	}
 
 	async execute(_id: string, params: MemoryRetainParams): Promise<AgentToolResult> {
 		const backend = this.session.settings.get("memory.backend");
+		if (backend === "mem0") {
+			const state = this.session.getMem0SessionState?.();
+			if (!state) {
+				throw new Error("Mem0 backend is not initialised for this session.");
+			}
+			const results = await Promise.all(
+				params.items.map(item => state.saveExplicit({ content: item.content, context: item.context, source: "retain" }, "assistant")),
+			);
+			const stored = results.reduce((count, result) => count + result.stored, 0);
+			const queued = results.filter(result => result.queued === true).length;
+			const failed = results.length - stored - queued;
+			const details = { count: results.length, stored, queued, failed };
+			return {
+				content: [
+					{
+						type: "text",
+						text: `${stored} ${stored === 1 ? "memory" : "memories"} stored; ${queued} queued or pending; ${failed} not stored.`,
+					},
+				],
+				details,
+			};
+		}
+
 		if (backend === "mnemopi") {
 			const state = this.session.getMnemopiSessionState?.();
 			if (!state) {

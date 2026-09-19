@@ -1362,6 +1362,7 @@ export class VibeSessionRegistry {
 			parentArtifactManager: session.getArtifactManager?.() ?? undefined,
 			parentHindsightSessionState: session.getHindsightSessionState?.(),
 			parentMnemopiSessionState: session.getMnemopiSessionState?.(),
+			parentMem0SessionState: session.getMem0SessionState?.(),
 			parentTelemetry: session.getTelemetry?.(),
 			parentEvalSessionId: session.getEvalSessionId?.() ?? undefined,
 			parentAgentId: session.getAgentId?.() ?? MAIN_AGENT_ID,

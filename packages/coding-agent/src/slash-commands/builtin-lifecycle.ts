@@ -7,7 +7,17 @@ import { applyProviderGlobalsFromSettings } from "../config/provider-globals";
 import { clearClaudePluginRootsCache } from "../discovery/helpers";
 import { loadSlashCommands } from "../extensibility/slash-commands";
 import { rebindMemoryBackendForCwd } from "../hindsight/backend";
-import { memoryStatsUnavailableMessage, resolveMemoryBackend } from "../memory-backend";
+import {
+	formatMemorySave,
+	formatMemorySearch,
+	formatMemoryStatus,
+	memoryClearMessage,
+	memoryEnqueueMessage,
+	memorySyncMessage,
+	memoryStatsUnavailableMessage,
+	resolveMemoryBackend,
+} from "../memory-backend";
+import { parseMemorySaveInput } from "../memory-backend/save-input";
 import type { AgentSession, FreshSessionResult, HandoffResult } from "../session/agent-session";
 import { COMPACT_MODES, parseCompactArgs } from "../session/compact-modes";
 import { buildReplanTitleContext, USER_INTERRUPT_LABEL } from "../session/messages";
@@ -567,6 +577,9 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 		acpInputHint: "<subcommand>",
 		subcommands: [
 			{ name: "view", description: "Show current memory injection payload" },
+			{ name: "status", description: "Show structured memory backend status" },
+			{ name: "search", description: "Search project-scoped memories (query required)" },
+			{ name: "save", description: "Save a project memory, or a Mem0 user preference with --global" },
 			{ name: "stats", description: "Show memory backend statistics" },
 			{ name: "diagnose", description: "Run memory backend diagnostics" },
 			{ name: "queue", description: "Show pending memory deltas awaiting consolidation" },
@@ -588,7 +601,10 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 		],
 		allowArgs: true,
 		handle: async (command, runtime) => {
-			const verb = (command.args.trim().split(/\s+/)[0] ?? "").toLowerCase() || "view";
+			const argumentText = command.args.trim();
+			const rawVerb = argumentText.split(/\s+/, 1)[0] ?? "";
+			const verb = rawVerb.toLowerCase() || "view";
+			const argument = argumentText.slice(rawVerb.length).trim();
 			const backend = await resolveMemoryBackend(runtime.settings);
 			switch (verb) {
 				case "view": {
@@ -600,17 +616,53 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 					await runtime.output(payload || "Memory payload is empty.");
 					return commandConsumed();
 				}
+				case "status": {
+					const status = await backend.status?.({
+						agentDir: runtime.settings.getAgentDir(),
+						cwd: runtime.cwd,
+						session: runtime.session,
+					});
+					await runtime.output(status ? formatMemoryStatus(status) : `Memory status is not available for the ${backend.id} backend.`);
+					return commandConsumed();
+				}
+				case "search": {
+					if (!argument) return usage("Usage: /memory search <query>", runtime);
+					const result = await backend.search?.(
+						{ agentDir: runtime.settings.getAgentDir(), cwd: runtime.cwd, session: runtime.session },
+						argument,
+					);
+					await runtime.output(result ? formatMemorySearch(result) : `Memory search is not available for the ${backend.id} backend.`);
+					return commandConsumed();
+				}
+				case "save": {
+					const parsed = parseMemorySaveInput(argument);
+					if (!parsed) return usage("Usage: /memory save [--global] <content>", runtime);
+					if (parsed.scope === "global-preference" && backend.id !== "mem0") {
+						await runtime.output("Global standing preferences are available only with the Mem0 backend.");
+						return commandConsumed();
+					}
+					const result = await backend.save?.(
+						{ agentDir: runtime.settings.getAgentDir(), cwd: runtime.cwd, session: runtime.session },
+						{
+							content: parsed.content,
+							source: parsed.scope === "global-preference" ? "memory.save.global" : "memory.save",
+							...(parsed.scope === "global-preference" ? { scope: "global-preference" as const } : {}),
+						},
+					);
+					await runtime.output(result ? formatMemorySave(result) : `Memory save is not available for the ${backend.id} backend.`);
+					return commandConsumed();
+				}
 				case "clear":
 				case "reset": {
 					await backend.clear(runtime.settings.getAgentDir(), runtime.cwd, runtime.session);
 					await runtime.session.refreshBaseSystemPrompt();
-					await runtime.output("Memory cleared.");
+					await runtime.output(memoryClearMessage(backend.id));
 					return commandConsumed();
 				}
 				case "enqueue":
 				case "rebuild": {
 					await backend.enqueue(runtime.settings.getAgentDir(), runtime.cwd, runtime.session);
-					await runtime.output("Memory consolidation enqueued.");
+					await runtime.output(memoryEnqueueMessage(backend.id));
 					return commandConsumed();
 				}
 				case "queue": {
@@ -624,7 +676,7 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 				}
 				case "sync": {
 					await backend.enqueue(runtime.settings.getAgentDir(), runtime.cwd, runtime.session);
-					await runtime.output("Memory consolidation ran.");
+					await runtime.output(memorySyncMessage(backend.id));
 					return commandConsumed();
 				}
 				case "stats":
@@ -640,7 +692,7 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 						runtime,
 					);
 				default:
-					return usage("Usage: /memory <view|stats|diagnose|clear|reset|enqueue|rebuild|queue|sync>", runtime);
+					return usage("Usage: /memory <view|status|search|save [--global]|stats|diagnose|clear|reset|enqueue|rebuild|queue|sync>", runtime);
 			}
 		},
 		handleTui: async (command, runtime) => {

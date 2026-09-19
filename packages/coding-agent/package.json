@@ -406,6 +406,14 @@
       "types": "./src/memories/*.ts",
       "import": "./src/memories/*.ts"
     },
+    "./mem0": {
+      "types": "./src/mem0/index.ts",
+      "import": "./src/mem0/index.ts"
+    },
+    "./mem0/*": {
+      "types": "./src/mem0/*.ts",
+      "import": "./src/mem0/*.ts"
+    },
     "./memory-backend": {
       "types": "./src/memory-backend/index.ts",
       "import": "./src/memory-backend/index.ts"

@@ -155,6 +155,7 @@ import { normalizeToolEventInput, resolveToolEventInput } from "../extensibility
 import { GoalRuntime } from "../goals/runtime";
 import type { GoalModeState } from "../goals/state";
 import type { HindsightSessionState } from "../hindsight/state";
+import type { Mem0SessionState } from "../mem0/state";
 import { type LocalProtocolOptions, resolveLocalUrlToPath } from "../internal-urls";
 import type { IrcMessage } from "../irc/bus";
 import type { DaemonCompletionNotification } from "../launch/protocol";
@@ -880,6 +881,7 @@ export class AgentSession {
 	#synchronouslyTerminatedYieldToolCallIds = new Set<string>();
 	#providerSessionState = new Map<string, ProviderSessionState>();
 	#hindsightSessionState: HindsightSessionState | undefined = undefined;
+	#mem0SessionState: Mem0SessionState | undefined = undefined;
 	readonly #memory: SessionMemory;
 	readonly rawSseDebugBuffer: RawSseDebugBuffer;
 
@@ -1511,6 +1513,8 @@ export class AgentSession {
 			memoryBackendSession: () => this,
 			getHindsightSessionState: () => this.getHindsightSessionState(),
 			setHindsightSessionState: state => this.setHindsightSessionState(state),
+			getMem0SessionState: () => this.getMem0SessionState(),
+			setMem0SessionState: state => this.setMem0SessionState(state),
 			getMnemopiSessionState: () => this.getMnemopiSessionState(),
 			takeMnemopiSessionState: () => setMnemopiSessionState(this, undefined),
 			setBaseSystemPrompt: prompt => {
@@ -2224,6 +2228,16 @@ export class AgentSession {
 		this.#hindsightSessionState = state;
 		return previous;
 	}
+	getMem0SessionState(): Mem0SessionState | undefined {
+		return this.#mem0SessionState;
+	}
+
+	setMem0SessionState(state: Mem0SessionState | undefined): Mem0SessionState | undefined {
+		const previous = this.#mem0SessionState;
+		this.#mem0SessionState = state;
+		return previous;
+	}
+
 
 	getMnemopiSessionState(): MnemopiSessionState | undefined {
 		return getMnemopiSessionState(this);
@@ -4878,6 +4892,7 @@ export class AgentSession {
 		await this.#memory.transition;
 
 		const hindsightState = this.getHindsightSessionState();
+		const mem0State = this.setMem0SessionState(undefined);
 		const mnemopiState = setMnemopiSessionState(this, undefined);
 		// Bound the wait for a just-fired sharpshooter extraction before dropping
 		// its subscriptions, so print-mode exits don't cut queued-delta writes.
@@ -4897,6 +4912,7 @@ export class AgentSession {
 			this.#disconnectOwnedMcp(),
 			advisorRecorderClosed,
 			hindsightState?.flushRetainQueue() ?? Promise.resolve(),
+			mem0State?.drainForDispose() ?? Promise.resolve(),
 			this.#disposeMnemopi(mnemopiState, options.mnemopiConsolidateTimeoutMs),
 			sharpshooterFlushed,
 		]);
@@ -4915,6 +4931,7 @@ export class AgentSession {
 		this.#maintenance.cancelSpeculation();
 		this.setHindsightSessionState(undefined);
 		hindsightState?.dispose();
+		mem0State?.dispose();
 		this.#disconnectFromAgent();
 		if (this.#unsubscribeAppendOnly) {
 			this.#unsubscribeAppendOnly();
