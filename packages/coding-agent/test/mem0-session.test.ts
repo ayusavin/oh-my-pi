@@ -12,7 +12,7 @@ import { loadMem0StandingProfile, type Mem0ProfileClient } from "@oh-my-pi/pi-co
 import { renderMem0PromptContext } from "@oh-my-pi/pi-coding-agent/mem0/prompt-context";
 import { composeMem0TextRedactors } from "@oh-my-pi/pi-coding-agent/mem0/redaction-context";
 import { mem0GlobalSaveScopeError } from "@oh-my-pi/pi-coding-agent/mem0/save-scope";
-import { MEM0_USER_ID, type Mem0Memory } from "@oh-my-pi/pi-coding-agent/mem0/types";
+import { MEM0_APP_ID, MEM0_USER_ID, type Mem0Memory } from "@oh-my-pi/pi-coding-agent/mem0/types";
 import { Mem0WorkScope } from "@oh-my-pi/pi-coding-agent/mem0/work";
 import { parseMemorySaveInput } from "@oh-my-pi/pi-coding-agent/memory-backend/save-input";
 
@@ -21,6 +21,7 @@ function standingPreference(id: string, memory: string, overrides: Partial<Mem0M
 		id,
 		memory,
 		userId: MEM0_USER_ID,
+		appId: MEM0_APP_ID,
 		metadata: { memory_scope: "global-preference" },
 		...overrides,
 	};
@@ -33,6 +34,9 @@ describe("Mem0 session runtime", () => {
 		const superseded = standingPreference("33333333-3333-4333-8333-333333333333", "Do not render this.", {
 			replacedBy: "44444444-4444-4444-8444-444444444444",
 		});
+		const foreignAgent = standingPreference("55555555-5555-4555-8555-555555555555", "Another agent's standing fact.", {
+			appId: undefined,
+		});
 		const requestedPages: number[] = [];
 		const requestedFilters: Record<string, unknown>[] = [];
 		const client: Mem0ProfileClient = {
@@ -40,7 +44,7 @@ describe("Mem0 session runtime", () => {
 				const page = options?.page ?? 1;
 				requestedFilters.push(filters);
 				requestedPages.push(page);
-				if (page === 1) return { count: 3, next: "page-2", results: [first, first] };
+				if (page === 1) return { count: 3, next: "page-2", results: [first, first, foreignAgent] };
 				return { count: 3, next: null, results: [second, superseded] };
 			},
 		};
@@ -56,8 +60,8 @@ describe("Mem0 session runtime", () => {
 
 		expect(requestedPages).toEqual([1, 2]);
 		expect(requestedFilters).toEqual([
-			{ user_id: MEM0_USER_ID, metadata: { memory_scope: "global-preference" } },
-			{ user_id: MEM0_USER_ID, metadata: { memory_scope: "global-preference" } },
+			{ user_id: MEM0_USER_ID, app_id: MEM0_APP_ID, metadata: { memory_scope: "global-preference" } },
+			{ user_id: MEM0_USER_ID, app_id: MEM0_APP_ID, metadata: { memory_scope: "global-preference" } },
 		]);
 		expect(loaded.preferences.map(memory => memory.id)).toEqual([first.id, second.id]);
 		expect(rendered.context).toContain(first.memory);
@@ -242,8 +246,7 @@ describe("Mem0 session runtime", () => {
 			},
 			maxChars: 1_000,
 		});
-		expect(admitted?.request).toMatchObject({ user_id: MEM0_USER_ID });
-		expect(admitted?.request).not.toHaveProperty("app_id");
+		expect(admitted?.request).toMatchObject({ user_id: MEM0_USER_ID, app_id: MEM0_APP_ID });
 		expect(admitted?.request).not.toHaveProperty("agent_id");
 		expect(admitted?.request).not.toHaveProperty("run_id");
 		expect(

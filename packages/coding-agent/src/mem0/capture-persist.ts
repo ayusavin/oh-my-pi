@@ -11,7 +11,7 @@ export interface Mem0TerminalCapturePersistence {
 	sessionId: string;
 	branch: readonly Mem0TranscriptEntry[];
 	expectedTerminalEntryId: string;
-	config: Pick<Mem0Config, "captureMaxChars" | "toolResultMaxChars" | "toolResultAllowlist">;
+	config: Pick<Mem0Config, "captureMaxChars" | "toolResultMaxChars" | "toolResultAllowlist" | "identity">;
 	redact: Mem0TextRedactor;
 	canPersist(): boolean;
 	newOutboxEntry(admitted: Mem0AdmittedPayload): Mem0OutboxEntry;
@@ -40,6 +40,7 @@ export async function persistAcceptedMem0TerminalCapture(input: Mem0TerminalCapt
 		maxChars: input.config.captureMaxChars,
 		toolResultMaxChars: input.config.toolResultMaxChars,
 		toolResultAllowlist: input.config.toolResultAllowlist,
+		identity: input.config.identity,
 		redact: input.redact,
 	});
 	if (admitted.length === 0) return;

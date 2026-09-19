@@ -13,7 +13,8 @@ import {
 import { Mem0Client } from "@oh-my-pi/pi-coding-agent/mem0/client";
 import { deriveMem0RepositoryIdentity } from "@oh-my-pi/pi-coding-agent/mem0/identity";
 import { Mem0Outbox } from "@oh-my-pi/pi-coding-agent/mem0/outbox";
-import { MEM0_APP_ID, MEM0_USER_ID, type Mem0Memory, type Mem0OutboxEntry } from "@oh-my-pi/pi-coding-agent/mem0/types";
+import { mem0ProjectFilters } from "@oh-my-pi/pi-coding-agent/mem0/state";
+import { MEM0_APP_ID, MEM0_IDENTITY, MEM0_USER_ID, type Mem0Memory, type Mem0OutboxEntry } from "@oh-my-pi/pi-coding-agent/mem0/types";
 
 const REPOSITORY_ID = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 const EVENT_ID = "11111111-1111-4111-8111-111111111111";
@@ -283,15 +284,23 @@ describe("Mem0 backend", () => {
 			id: "33333333-3333-4333-8333-333333333333",
 			memory: "A standing preference.",
 			userId: MEM0_USER_ID,
+			appId: MEM0_APP_ID,
+			metadata: { memory_scope: "global-preference" },
+		};
+		const foreignAgentGlobal: Mem0Memory = {
+			id: "55555555-5555-4555-8555-555555555555",
+			memory: "Another agent's standing fact.",
+			userId: MEM0_USER_ID,
 			metadata: { memory_scope: "global-preference" },
 		};
 		const project = projectMemory();
-		const invalidGlobal = projectMemory({
+		const assistantGlobal = projectMemory({
 			id: "44444444-4444-4444-8444-444444444444",
+			agentId: "omp",
 			metadata: { memory_scope: "global-preference" },
 		});
 
-		expect(selectMem0StandingPreferences([profile, project, invalidGlobal, profile], 12)).toEqual([profile]);
+		expect(selectMem0StandingPreferences([profile, project, assistantGlobal, foreignAgentGlobal, profile], 12)).toEqual([profile]);
 	});
 
 	it("persists queued, pending, and committed states without replaying the same terminal checkpoint", async () => {
@@ -338,5 +347,34 @@ describe("Mem0 backend", () => {
 		expect(request?.url).toBe("https://api.mem0.ai/v3/memories/add/");
 		expect(request?.headers.get("authorization")).toBe("Token test-key");
 		expect(request?.headers.get("mem0-user-id")).toBeNull();
+	});
+
+	it("scopes every project search to this agent and drops rows another agent wrote", async () => {
+		let body: Record<string, unknown> | undefined;
+		const wireMetadata = { memory_scope: "project", repository_id: REPOSITORY_ID };
+		const ownRow = { id: OUTBOX_ID, memory: "A project decision.", agent_id: MEM0_IDENTITY.agentId, app_id: MEM0_IDENTITY.appId, metadata: wireMetadata };
+		const foreignRow = { id: "66666666-6666-4666-8666-666666666666", memory: "Another agent's fact.", user_id: MEM0_USER_ID, metadata: wireMetadata };
+		const fetchImpl = Object.assign(async (_input: string | URL | Request, init?: RequestInit) => {
+			body = JSON.parse(String(init?.body));
+			return new Response(JSON.stringify({ results: [ownRow, foreignRow] }), {
+				status: 200,
+				headers: { "content-type": "application/json" },
+			});
+		}, { preconnect: fetch.preconnect });
+		const client = new Mem0Client("test-key", { requestTimeoutMs: 1_000, fetchImpl });
+		const response = await client.search("a query", mem0ProjectFilters("assistant", REPOSITORY_ID, MEM0_IDENTITY), 5);
+
+		expect(body?.filters).toEqual({
+			agent_id: MEM0_IDENTITY.agentId,
+			app_id: MEM0_IDENTITY.appId,
+			metadata: { memory_scope: "project", repository_id: REPOSITORY_ID },
+		});
+		expect(mem0ProjectFilters("user", REPOSITORY_ID, MEM0_IDENTITY)).toEqual({
+			user_id: MEM0_IDENTITY.userId,
+			app_id: MEM0_IDENTITY.appId,
+			metadata: { memory_scope: "project", repository_id: REPOSITORY_ID },
+		});
+		expect(response.results.map(memory => memory.id)).toEqual([OUTBOX_ID, foreignRow.id]);
+		expect(response.results.filter(memory => isScopedMem0Memory(memory, REPOSITORY_ID)).map(memory => memory.id)).toEqual([OUTBOX_ID]);
 	});
 });

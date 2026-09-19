@@ -29,7 +29,7 @@ import { renderMem0PromptContext, type Mem0ProfilePromptState } from "./prompt-c
 import { createMem0TextRedactor, type Mem0TextRedactor } from "./redact";
 import { composeMem0TextRedactors } from "./redaction-context";
 import { mem0GlobalSaveScopeError } from "./save-scope";
-import { MEM0_AGENT_ID, MEM0_APP_ID, MEM0_USER_ID, type Mem0Memory, type Mem0OutboxEntry } from "./types";
+import type { Mem0Identity, Mem0Memory, Mem0OutboxEntry } from "./types";
 import { Mem0WorkScope } from "./work";
 
 const PROMPT_QUERY_MAX_CHARS = 4_000;
@@ -45,10 +45,15 @@ interface Mem0ProjectRecall {
 	message?: string;
 }
 
-function projectFilters(actor: "user" | "assistant", repositoryId: string): Record<string, unknown> {
+/** Exported for the test that asserts the outgoing search stays inside this agent's namespace. */
+export function mem0ProjectFilters(
+	actor: "user" | "assistant",
+	repositoryId: string,
+	identity: Mem0Identity,
+): Record<string, unknown> {
 	return {
-		...(actor === "user" ? { user_id: MEM0_USER_ID } : { agent_id: MEM0_AGENT_ID }),
-		app_id: MEM0_APP_ID,
+		...(actor === "user" ? { user_id: identity.userId } : { agent_id: identity.agentId }),
+		app_id: identity.appId,
 		metadata: { memory_scope: "project", repository_id: repositoryId },
 	};
 }
@@ -377,8 +382,8 @@ export class Mem0SessionState {
 		const topK = Math.max(1, Math.min(this.config.projectRecallLimit, limit));
 		const requestSignal = this.#requestSignal(caller, signal);
 		const results = await Promise.allSettled([
-			client.search(cleanQuery, projectFilters("user", this.identity.repositoryId), topK, requestSignal),
-			client.search(cleanQuery, projectFilters("assistant", this.identity.repositoryId), topK, requestSignal),
+			client.search(cleanQuery, mem0ProjectFilters("user", this.identity.repositoryId, this.config.identity), topK, requestSignal),
+			client.search(cleanQuery, mem0ProjectFilters("assistant", this.identity.repositoryId, this.config.identity), topK, requestSignal),
 		]);
 		if (!this.#isCurrent(caller, owner)) {
 			return { memories: [], message: "Memory search was discarded after the session changed." };
@@ -387,7 +392,7 @@ export class Mem0SessionState {
 		let failures = 0;
 		for (const result of results) {
 			if (result.status === "fulfilled") {
-				memories.push(...result.value.results.filter(memory => isScopedMem0Memory(memory, this.identity.repositoryId)));
+				memories.push(...result.value.results.filter(memory => isScopedMem0Memory(memory, this.identity.repositoryId, this.config.identity)));
 			} else {
 				failures++;
 			}
@@ -432,6 +437,7 @@ export class Mem0SessionState {
 				observedAt: new Date().toISOString(),
 			},
 			maxChars: this.config.captureMaxChars,
+			identity: this.config.identity,
 			redact: this.#redactorFor(caller),
 		});
 		if (!admitted) return { backend: "mem0", stored: 0, message: "Memory content is empty after redaction." };
@@ -467,11 +473,11 @@ export class Mem0SessionState {
 		const signal = this.#requestSignal(caller);
 		const existing = await client.getMemory(id, signal);
 		if (!this.#canWrite(caller, owner)) throw new Error("Mem0 update was discarded because write permission changed.");
-		if (!isScopedMem0Memory(existing, this.identity.repositoryId)) throw new Error("Mem0 memory is outside the active project scope.");
+		if (!isScopedMem0Memory(existing, this.identity.repositoryId, this.config.identity)) throw new Error("Mem0 memory is outside the active project scope.");
 		const text = this.#redactorFor(caller)(content).trim();
 		if (!text) throw new Error("Memory content is empty after redaction.");
 		const updated = await client.updateMemory(id, text, signal);
-		if (!this.#canWrite(caller, owner) || !isScopedMem0Memory(updated, this.identity.repositoryId)) {
+		if (!this.#canWrite(caller, owner) || !isScopedMem0Memory(updated, this.identity.repositoryId, this.config.identity)) {
 			throw new Error("Mem0 update was discarded because the session scope changed.");
 		}
 		return updated;
@@ -484,7 +490,7 @@ export class Mem0SessionState {
 		const signal = this.#requestSignal(caller);
 		const existing = await client.getMemory(id, signal);
 		if (!this.#canWrite(caller, owner)) throw new Error("Mem0 deletion was discarded because write permission changed.");
-		if (!isScopedMem0Memory(existing, this.identity.repositoryId)) throw new Error("Mem0 memory is outside the active project scope.");
+		if (!isScopedMem0Memory(existing, this.identity.repositoryId, this.config.identity)) throw new Error("Mem0 memory is outside the active project scope.");
 		await client.deleteMemory(id, signal);
 		if (!this.#canWrite(caller, owner)) throw new Error("Mem0 deletion completed after the session scope changed.");
 	}
@@ -494,7 +500,7 @@ export class Mem0SessionState {
 		const client = this.#requireClient(caller, owner);
 		const memory = await client.getMemory(id, this.#requestSignal(caller, signal));
 		if (!this.#isCurrent(caller, owner)) throw new Error("Mem0 read was discarded because the session scope changed.");
-		if (!isScopedMem0Memory(memory, this.identity.repositoryId) && !isGlobalPreferenceMem0Memory(memory)) {
+		if (!isScopedMem0Memory(memory, this.identity.repositoryId, this.config.identity) && !isGlobalPreferenceMem0Memory(memory, this.config.identity)) {
 			throw new Error("Mem0 memory is outside the active scope.");
 		}
 		return memory;
@@ -506,6 +512,7 @@ export class Mem0SessionState {
 		try {
 			const profile = await loadMem0StandingProfile(this.#client, {
 				pageLimit: this.config.profilePageLimit,
+				identity: this.config.identity,
 				signal: this.#requestSignal(this),
 			});
 			if (!this.#isCurrent(this, owner, false)) return;

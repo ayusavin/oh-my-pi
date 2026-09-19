@@ -2,9 +2,11 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { isEnoent } from "@oh-my-pi/pi-utils";
 import type { Settings } from "../config/settings";
+import { MEM0_AGENT_ID, MEM0_APP_ID, MEM0_USER_ID, type Mem0Identity } from "./types";
 
 export interface Mem0Config {
 	apiKeyFile?: string;
+	identity: Mem0Identity;
 	profilePageLimit: number;
 	projectRecallLimit: number;
 	injectionMaxChars: number;
@@ -44,6 +46,11 @@ function configuredAllowlist(value: readonly string[]): string[] {
 export function loadMem0Config(settings: Settings): Mem0Config {
 	return {
 		apiKeyFile: settings.get("mem0.apiKeyFile")?.trim() || undefined,
+		identity: {
+			userId: MEM0_USER_ID,
+			agentId: settings.get("mem0.agentId")?.trim() || MEM0_AGENT_ID,
+			appId: settings.get("mem0.appId")?.trim() || MEM0_APP_ID,
+		},
 		profilePageLimit: boundedNumber(settings.get("mem0.profilePageLimit"), 100, 1, 1_000),
 		projectRecallLimit: boundedNumber(settings.get("mem0.projectRecallLimit"), 8, 1, 32),
 		injectionMaxChars: boundedNumber(settings.get("mem0.injectionMaxChars"), 16_000, 512, 200_000),

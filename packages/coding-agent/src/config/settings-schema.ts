@@ -3244,6 +3244,28 @@ export const SETTINGS_SCHEMA = {
 			condition: "mem0Active",
 		},
 	},
+	"mem0.agentId": {
+		type: "string",
+		default: "omp",
+		ui: {
+			tab: "memory",
+			group: "Mem0",
+			label: "Mem0 Agent Id",
+			description: "Namespace for this agent inside a Mem0 account shared with other agents",
+			condition: "mem0Active",
+		},
+	},
+	"mem0.appId": {
+		type: "string",
+		default: "omp",
+		ui: {
+			tab: "memory",
+			group: "Mem0",
+			label: "Mem0 App Id",
+			description: "Namespace for this installation inside a Mem0 account shared with other agents",
+			condition: "mem0Active",
+		},
+	},
 	"mem0.profilePageLimit": { type: "number", default: 100 },
 	"mem0.projectRecallLimit": { type: "number", default: 8 },
 	"mem0.injectionMaxChars": { type: "number", default: 16_000 },

@@ -1,5 +1,5 @@
 import { selectMem0StandingPreferences } from "./admission";
-import { MEM0_USER_ID, type Mem0ListResponse, type Mem0Memory } from "./types";
+import { MEM0_IDENTITY, type Mem0Identity, type Mem0ListResponse, type Mem0Memory } from "./types";
 
 export const MEM0_PROFILE_PAGE_SIZE = 200;
 
@@ -30,13 +30,14 @@ function isActiveStandingPreference(memory: Mem0Memory, now: number): boolean {
  */
 export async function loadMem0StandingProfile(
 	client: Mem0ProfileClient,
-	options: { pageLimit: number; signal?: AbortSignal; now?: number },
+	options: { pageLimit: number; signal?: AbortSignal; now?: number; identity?: Mem0Identity },
 ): Promise<Mem0StandingProfileLoad> {
 	const pageLimit = Math.max(1, Math.trunc(options.pageLimit));
+	const identity = options.identity ?? MEM0_IDENTITY;
 	const memories: Mem0Memory[] = [];
 	for (let page = 1; page <= pageLimit; page++) {
 		const response = await client.list(
-			{ user_id: MEM0_USER_ID, metadata: { memory_scope: "global-preference" } },
+			{ user_id: identity.userId, app_id: identity.appId, metadata: { memory_scope: "global-preference" } },
 			{ page, pageSize: MEM0_PROFILE_PAGE_SIZE, showExpired: false },
 			options.signal,
 		);
@@ -45,7 +46,7 @@ export async function loadMem0StandingProfile(
 			const now = options.now ?? Date.now();
 			return {
 				status: "ready",
-				preferences: selectMem0StandingPreferences(memories, Number.MAX_SAFE_INTEGER).filter(memory =>
+				preferences: selectMem0StandingPreferences(memories, Number.MAX_SAFE_INTEGER, identity).filter(memory =>
 					isActiveStandingPreference(memory, now),
 				),
 			};

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { MEM0_AGENT_ID, MEM0_APP_ID, MEM0_USER_ID, type Mem0Actor, type Mem0AddRequest, type Mem0Memory, type Mem0MemoryScope, type Mem0Message, type Mem0SourceRef } from "./types";
+import { MEM0_IDENTITY, type Mem0Actor, type Mem0AddRequest, type Mem0Identity, type Mem0Memory, type Mem0MemoryScope, type Mem0Message, type Mem0SourceRef } from "./types";
 import agentCustomInstructions from "../prompts/memories/mem0-agent-custom-instructions.md" with { type: "text" };
 import userCustomInstructions from "../prompts/memories/mem0-user-custom-instructions.md" with { type: "text" };
 import { redactMem0Text, type Mem0TextRedactor } from "./redact";
@@ -25,6 +25,7 @@ export interface Mem0AdmissionInput {
 	messages: readonly Mem0AdmissionMessage[];
 	source: Mem0SourceRef;
 	maxChars: number;
+	identity?: Mem0Identity;
 	/** `false` is reserved for reviewed atomic direct import. */
 	infer?: boolean;
 	redact?: Mem0TextRedactor;
@@ -57,6 +58,7 @@ export interface Mem0TerminalAdmissionInput {
 	maxChars: number;
 	toolResultMaxChars: number;
 	toolResultAllowlist: readonly string[];
+	identity?: Mem0Identity;
 	redact?: Mem0TextRedactor;
 }
 
@@ -136,15 +138,14 @@ export function admitMem0Payload(input: Mem0AdmissionInput): Mem0AdmittedPayload
 	});
 	const ingestKey = createHash("sha256").update(canonical, "utf8").digest("hex");
 	const metadata = metadataFor({ ...input, source }, ingestKey);
+	const identity = input.identity ?? MEM0_IDENTITY;
 	const request: Mem0AddRequest = {
 		messages,
 		metadata,
 		infer,
-		...(input.scope === "global-preference"
-			? { user_id: MEM0_USER_ID, custom_instructions: USER_CUSTOM_INSTRUCTIONS }
-			: input.actor === "user"
-				? { user_id: MEM0_USER_ID, app_id: MEM0_APP_ID, custom_instructions: USER_CUSTOM_INSTRUCTIONS }
-				: { agent_id: MEM0_AGENT_ID, app_id: MEM0_APP_ID, agent_custom_instructions: AGENT_CUSTOM_INSTRUCTIONS }),
+		...(input.actor === "user"
+			? { user_id: identity.userId, app_id: identity.appId, custom_instructions: USER_CUSTOM_INSTRUCTIONS }
+			: { agent_id: identity.agentId, app_id: identity.appId, agent_custom_instructions: AGENT_CUSTOM_INSTRUCTIONS }),
 	};
 	return { ingestKey, repositoryId: input.repositoryId ?? "global-preference", request, source };
 }
@@ -178,6 +179,7 @@ export function admitMem0TerminalTurn(input: Mem0TerminalAdmissionInput): Mem0Ad
 			observedAt: input.observedAt,
 		},
 		maxChars: input.maxChars,
+		identity: input.identity,
 		redact,
 	});
 	if (user) payloads.push(user);
@@ -194,6 +196,7 @@ export function admitMem0TerminalTurn(input: Mem0TerminalAdmissionInput): Mem0Ad
 			observedAt: input.observedAt,
 		},
 		maxChars: input.maxChars,
+		identity: input.identity,
 		redact,
 	});
 	if (assistant) payloads.push(assistant);
@@ -229,6 +232,7 @@ export function admitMem0TerminalTurn(input: Mem0TerminalAdmissionInput): Mem0Ad
 				toolName: entry.toolName,
 			},
 			maxChars: input.toolResultMaxChars,
+			identity: input.identity,
 			redact,
 		});
 		if (tool) payloads.push(tool);
@@ -242,27 +246,30 @@ function metadataString(memory: Mem0Memory, key: string): string | undefined {
 }
 
 /** Strict local scope checks protect per-ID reads and mutations without server filters. */
-export function isScopedMem0Memory(memory: Mem0Memory, repositoryId: string): boolean {
+export function isScopedMem0Memory(memory: Mem0Memory, repositoryId: string, identity: Mem0Identity = MEM0_IDENTITY): boolean {
 	if (metadataString(memory, "memory_scope") !== "project") return false;
 	if (metadataString(memory, "repository_id") !== repositoryId) return false;
-	if (memory.appId !== MEM0_APP_ID) return false;
-	return memory.userId === MEM0_USER_ID || memory.agentId === MEM0_AGENT_ID;
+	if (memory.appId !== identity.appId) return false;
+	return memory.userId === identity.userId || memory.agentId === identity.agentId;
 }
 
-/** Standing preferences must be explicit user-only records, never broad global data. */
-export function isGlobalPreferenceMem0Memory(memory: Mem0Memory): boolean {
+/** Standing preferences must be this installation's own user records, never another agent's. */
+export function isGlobalPreferenceMem0Memory(memory: Mem0Memory, identity: Mem0Identity = MEM0_IDENTITY): boolean {
 	return (
 		metadataString(memory, "memory_scope") === "global-preference" &&
-		memory.userId === MEM0_USER_ID &&
+		memory.userId === identity.userId &&
+		memory.appId === identity.appId &&
 		memory.agentId === undefined &&
-
-		memory.appId === undefined &&
 		memory.runId === undefined
 	);
 }
 /** Select the bounded user-only profile lane without semantic/global fallback. */
-export function selectMem0StandingPreferences(memories: readonly Mem0Memory[], limit: number): Mem0Memory[] {
-	return uniqueMem0Memories(memories.filter(isGlobalPreferenceMem0Memory)).slice(0, Math.max(0, limit));
+export function selectMem0StandingPreferences(
+	memories: readonly Mem0Memory[],
+	limit: number,
+	identity: Mem0Identity = MEM0_IDENTITY,
+): Mem0Memory[] {
+	return uniqueMem0Memories(memories.filter(memory => isGlobalPreferenceMem0Memory(memory, identity))).slice(0, Math.max(0, limit));
 }
 
 /** Deduplicate repeated ids without changing server result order. */

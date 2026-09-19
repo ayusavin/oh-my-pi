@@ -3,6 +3,15 @@ export const MEM0_USER_ID = "ayusavin";
 export const MEM0_AGENT_ID = "omp";
 export const MEM0_APP_ID = "omp";
 
+/** One Mem0 account is shared with other agents; these ids are omp's own namespace inside it. */
+export interface Mem0Identity {
+	userId: string;
+	agentId: string;
+	appId: string;
+}
+
+export const MEM0_IDENTITY: Mem0Identity = { userId: MEM0_USER_ID, agentId: MEM0_AGENT_ID, appId: MEM0_APP_ID };
+
 export type Mem0MemoryScope = "global-preference" | "project";
 export type Mem0Actor = "user" | "assistant" | "tool";
 export type Mem0MessageRole = "user" | "assistant" | "system";
