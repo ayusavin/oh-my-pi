@@ -10,10 +10,11 @@ import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { ModelRegistry } from "../config/model-registry";
 import type { Settings } from "../config/settings";
 import type { HindsightSessionState } from "../hindsight/state";
+import type { Mem0SessionState } from "../mem0/state";
 import type { MnemopiSessionState } from "../mnemopi/state";
 import type { AgentSession } from "../session/agent-session";
 
-export type MemoryBackendId = "off" | "local" | "hindsight" | "mnemopi" | "sharpshooter";
+export type MemoryBackendId = "off" | "local" | "hindsight" | "mem0" | "mnemopi" | "sharpshooter";
 
 export interface MemoryBackendStatus {
 	backend: MemoryBackendId;
@@ -59,6 +60,8 @@ export interface MemoryBackendSaveInput {
 	content: string;
 	context?: string;
 	source?: string;
+	/** Explicit user-selected destination; backends that do not support it reject it. */
+	scope?: "project" | "global-preference";
 	importance?: number;
 }
 
@@ -89,6 +92,7 @@ export interface MemoryBackendStartOptions {
 	agentDir: string;
 	taskDepth: number;
 	parentHindsightSessionState?: HindsightSessionState;
+	parentMem0SessionState?: Mem0SessionState;
 	parentMnemopiSessionState?: MnemopiSessionState;
 }
 

@@ -28,7 +28,17 @@ import {
 	seedAlreadyExists,
 	summarizeMentalModel,
 } from "../../hindsight";
-import { memoryStatsUnavailableMessage, resolveMemoryBackend } from "../../memory-backend";
+import {
+	formatMemorySave,
+	formatMemorySearch,
+	formatMemoryStatus,
+	memoryClearMessage,
+	memoryEnqueueMessage,
+	memoryStatsUnavailableMessage,
+	memorySyncMessage,
+	resolveMemoryBackend,
+} from "../../memory-backend";
+import { parseMemorySaveInput } from "../../memory-backend/save-input";
 import { BashExecutionComponent, bashPtyViewport } from "../../modes/components/bash-execution";
 import { BorderedLoader } from "../../modes/components/bordered-loader";
 import { DynamicBorder } from "../../modes/components/dynamic-border";
@@ -690,7 +700,9 @@ export class CommandController {
 
 	async handleMemoryCommand(text: string): Promise<void> {
 		const argumentText = text.slice(7).trim();
-		const action = argumentText.split(/\s+/, 1)[0]?.toLowerCase() || "view";
+		const rawAction = argumentText.split(/\s+/, 1)[0] ?? "";
+		const action = rawAction.toLowerCase() || "view";
+		const argument = argumentText.slice(rawAction.length).trim();
 		const agentDir = this.ctx.settings.getAgentDir();
 		const backend = await resolveMemoryBackend(this.ctx.settings);
 
@@ -710,11 +722,70 @@ export class CommandController {
 			return;
 		}
 
+		if (action === "status") {
+			const status = await backend.status?.({
+				agentDir,
+				cwd: this.ctx.sessionManager.getCwd(),
+				session: this.ctx.session,
+			});
+			if (!status) {
+				this.ctx.showWarning(`Memory status is not available for the ${backend.id} backend.`);
+				return;
+			}
+			showMarkdownPanel(this.ctx, "Memory Status", formatMemoryStatus(status));
+			return;
+		}
+
+		if (action === "search") {
+			if (!argument) {
+				this.ctx.showError("Usage: /memory search <query>");
+				return;
+			}
+			const result = await backend.search?.(
+				{ agentDir, cwd: this.ctx.sessionManager.getCwd(), session: this.ctx.session },
+				argument,
+			);
+			if (!result) {
+				this.ctx.showWarning(`Memory search is not available for the ${backend.id} backend.`);
+				return;
+			}
+			showMarkdownPanel(this.ctx, "Memory Search", formatMemorySearch(result));
+			return;
+		}
+
+		if (action === "save") {
+			const parsed = parseMemorySaveInput(argument);
+			if (!parsed) {
+				this.ctx.showError("Usage: /memory save [--global] <content>");
+				return;
+			}
+			if (parsed.scope === "global-preference" && backend.id !== "mem0") {
+				this.ctx.showError("Global standing preferences are available only with the Mem0 backend.");
+				return;
+			}
+			const result = await backend.save?.(
+				{ agentDir, cwd: this.ctx.sessionManager.getCwd(), session: this.ctx.session },
+				{
+					content: parsed.content,
+					source: parsed.scope === "global-preference" ? "memory.save.global" : "memory.save",
+					...(parsed.scope === "global-preference" ? { scope: "global-preference" as const } : {}),
+				},
+			);
+			if (!result) {
+				this.ctx.showWarning(`Memory save is not available for the ${backend.id} backend.`);
+				return;
+			}
+			this.ctx.showStatus(formatMemorySave(result));
+			return;
+		}
+
 		if (action === "reset" || action === "clear") {
 			try {
 				await backend.clear(agentDir, this.ctx.sessionManager.getCwd(), this.ctx.session);
 				await this.ctx.session.refreshBaseSystemPrompt();
-				this.ctx.showStatus("Memory data cleared and system prompt refreshed.");
+				this.ctx.showStatus(
+					backend.id === "mem0" ? memoryClearMessage(backend.id) : "Memory data cleared and system prompt refreshed.",
+				);
 			} catch (error) {
 				this.ctx.showError(`Memory clear failed: ${error instanceof Error ? error.message : String(error)}`);
 			}
@@ -724,7 +795,7 @@ export class CommandController {
 		if (action === "enqueue" || action === "rebuild") {
 			try {
 				await backend.enqueue(agentDir, this.ctx.sessionManager.getCwd(), this.ctx.session);
-				this.ctx.showStatus("Memory consolidation enqueued.");
+				this.ctx.showStatus(memoryEnqueueMessage(backend.id));
 			} catch (error) {
 				this.ctx.showError(`Memory enqueue failed: ${error instanceof Error ? error.message : String(error)}`);
 			}
@@ -751,7 +822,7 @@ export class CommandController {
 		if (action === "sync") {
 			try {
 				await backend.enqueue(agentDir, this.ctx.sessionManager.getCwd(), this.ctx.session);
-				this.ctx.showStatus("Memory consolidation ran.");
+				this.ctx.showStatus(memorySyncMessage(backend.id));
 			} catch (error) {
 				this.ctx.showError(`Memory sync failed: ${error instanceof Error ? error.message : String(error)}`);
 			}
@@ -778,7 +849,7 @@ export class CommandController {
 			return;
 		}
 
-		this.ctx.showError("Usage: /memory <view|stats|diagnose|clear|reset|enqueue|rebuild|queue|sync|mm ...>");
+		this.ctx.showError("Usage: /memory <view|status|search|save [--global]|stats|diagnose|clear|reset|enqueue|rebuild|queue|sync|mm ...>");
 	}
 
 	async #handleMentalModelsSubcommand(argumentText: string): Promise<void> {

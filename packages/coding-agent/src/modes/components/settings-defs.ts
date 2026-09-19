@@ -119,6 +119,13 @@ const CONDITIONS: Record<string, () => boolean> = {
 			return false;
 		}
 	},
+	mem0Active: () => {
+		try {
+			return Settings.instance.get("memory.backend") === "mem0";
+		} catch {
+			return false;
+		}
+	},
 	mnemopiActive: () => {
 		try {
 			return Settings.instance.get("memory.backend") === "mnemopi";
